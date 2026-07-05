@@ -2,6 +2,10 @@
 
 ESP32-S3 PlatformIO + Arduino 工程，接收 Android App 发来的 UDP JSON，并用 U8g2 在 OLED 上显示导航信息。
 
+## 许可证
+
+本 ESP32 子项目跟随仓库根目录 [LICENSE](../LICENSE)，禁止商用。禁止将固件、源码、二进制、OLED UI、接线方案、配置方案或衍生硬件资料用于销售、预装、商业套件、付费部署、付费服务或营利组织业务用途。
+
 ## 硬件基线
 
 本工程已按同硬件参考项目 `3D-Printer-Filament-Dryer` 对齐：

@@ -1,0 +1,78 @@
+AMap ESP32-S3 Navigation Display Non-Commercial License v1.0
+
+Copyright (c) 2026 zuo-qirun. All rights reserved.
+
+This is a custom non-commercial license for the AMap ESP32-S3
+Navigation Display project.
+
+1. Scope
+
+"Project Materials" means all files in this repository, including but not
+limited to source code, firmware, Android application code, object code,
+build scripts, documentation, protocol descriptions, UI designs, wiring
+plans, hardware design notes, assembly instructions, configuration choices,
+and any derivative works based on them.
+
+2. Permitted non-commercial use
+
+You may use, copy, study, modify, compile, flash, install, and share the
+Project Materials only for personal, educational, research, evaluation, or
+other non-commercial purposes.
+
+If you share copies or modified versions, you must keep this license notice
+and the copyright notice with the shared materials.
+
+3. No commercial use
+
+Commercial use of the Project Materials is prohibited without prior written
+permission from the copyright holder.
+
+Commercial use includes, but is not limited to:
+
+- selling, renting, leasing, sublicensing, or otherwise monetizing the
+  Project Materials or derivative works;
+- distributing the firmware, Android application, source code, binaries,
+  documentation, wiring plans, or hardware design materials as part of a
+  paid product, paid service, kit, course, or installation package;
+- preinstalling, flashing, or bundling this project on hardware intended for
+  sale, rental, paid deployment, or commercial operation;
+- using this project to provide paid installation, maintenance, integration,
+  operation, consulting, support, training, or hosted services;
+- using this project internally by or for a for-profit organization in a way
+  that supports business operations, products, services, or commercial
+  advantage;
+- using this project's hardware-related materials, including wiring plans,
+  design notes, configuration choices, enclosure or assembly documents if
+  added later, or derivative hardware designs, for commercial products,
+  commercial kits, paid deployments, or commercial services.
+
+Generic off-the-shelf components such as ESP32 boards, OLED modules, wires,
+and other commodity parts are not owned by this project. This license only
+restricts the Project Materials and derivative works based on them.
+
+4. Third-party materials
+
+Third-party libraries, SDKs, services, tools, trademarks, and documentation
+remain under their own licenses and terms. You are responsible for complying
+with those separate licenses and terms.
+
+This project is not affiliated with, endorsed by, or sponsored by AMap,
+Gaode, AutoNavi, Espressif, Arduino, PlatformIO, or any other third party
+unless explicitly stated.
+
+5. No warranty
+
+The Project Materials are provided "as is", without warranty of any kind,
+express or implied, including but not limited to warranties of
+merchantability, fitness for a particular purpose, and non-infringement.
+
+The copyright holder is not liable for any claim, damage, loss, legal issue,
+device failure, traffic risk, data loss, or other liability arising from the
+use of or inability to use the Project Materials.
+
+6. Commercial permission
+
+Commercial permission may be granted only by explicit prior written approval
+from the copyright holder. Silence, issue comments, pull requests, forks,
+stars, or public availability of this repository do not grant commercial
+permission.

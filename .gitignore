@@ -1,0 +1,30 @@
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Android/Gradle
+*.iml
+.gradle/
+build/
+android_forwarder/.gradle/
+android_forwarder/**/build/
+android_forwarder/local.properties
+
+# PlatformIO
+.pio/
+esp32_display/.pio/
+esp32_display/.vscode/
+
+# Build outputs
+*.apk
+*.aab
+*.bin
+*.elf
+*.map
+
+# Logs/temp
+*.log
+tmp/
+temp/

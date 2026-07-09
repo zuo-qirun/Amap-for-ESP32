@@ -16,6 +16,7 @@ android_forwarder/local.properties
 .pio/
 esp32_display/.pio/
 esp32_display/.vscode/
+esp32_display/dist/
 
 # Build outputs
 *.apk
@@ -23,8 +24,11 @@ esp32_display/.vscode/
 *.bin
 *.elf
 *.map
+firmware.sha256
+manifest.json
 
 # Logs/temp
 *.log
 tmp/
 temp/
+__pycache__/

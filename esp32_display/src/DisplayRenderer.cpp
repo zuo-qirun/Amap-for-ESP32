@@ -37,7 +37,7 @@ void DisplayRenderer::render(const NavState& state, bool wifiConnected, const St
 }
 
 void DisplayRenderer::renderNetwork(bool wifiConnected, const String& ip, uint16_t port) {
-  renderStandby(wifiConnected ? "等待手机连接" : "连接 WiFi 中", wifiConnected, ip, port);
+  renderStandby(wifiConnected ? "等待手机连接" : "AP 配网模式", wifiConnected, ip, port);
 }
 
 void DisplayRenderer::renderStandby(const String& message, bool wifiConnected,
@@ -47,7 +47,13 @@ void DisplayRenderer::renderStandby(const String& message, bool wifiConnected,
   drawClipped(0, 12, width, "AMap ESP32 Display");
   drawClipped(0, 28, width, message);
   drawClipped(0, 44, width, String("UDP :") + port);
-  drawClipped(0, 60, width, wifiConnected ? ("IP " + ip) : "WiFi 未连接");
+  if (wifiConnected) {
+    drawClipped(0, 60, width, "IP " + ip);
+  } else if (ip != "0.0.0.0") {
+    drawClipped(0, 60, width, "AP " + ip);
+  } else {
+    drawClipped(0, 60, width, "WiFi 未连接");
+  }
 }
 
 void DisplayRenderer::renderNav(const NavState& state, unsigned long silenceMs) {

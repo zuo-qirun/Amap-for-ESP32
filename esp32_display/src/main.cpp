@@ -5,9 +5,11 @@
 #include "DisplayRenderer.h"
 #include "NavState.h"
 #include "NetworkManager.h"
+#include "OtaManager.h"
 #include "ProtocolParser.h"
 
 NetworkManager network;
+OtaManager ota;
 ProtocolParser parser;
 DisplayRenderer display;
 NavState navState;
@@ -15,6 +17,7 @@ NavState navState;
 char packetBuffer[AMAP_PACKET_BUFFER_SIZE];
 unsigned long lastRenderAt = 0;
 unsigned long lastStatusLogAt = 0;
+bool oledReady = false;
 
 void scanI2CBus() {
   Serial.printf("I2C scan on SDA=%u SCL=%u, OLED addr8=0x%02X addr7=0x%02X\n",
@@ -44,12 +47,15 @@ void setup() {
 
   navState.reset();
   display.begin();
+  oledReady = true;
   scanI2CBus();
-  network.begin();
+  ota.begin();
+  network.begin(&ota);
 }
 
 void loop() {
   network.update();
+  ota.update(network.isConnected(), network.isWebReady(), oledReady);
 
   IPAddress remoteIp;
   uint16_t remotePort = 0;

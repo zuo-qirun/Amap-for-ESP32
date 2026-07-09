@@ -125,6 +125,33 @@ pio device monitor
 
 串口会打印 I2C 扫描结果、ESP32 IP，以及收到 UDP 后解析出的主要字段。若 OLED 不亮，先看串口是否扫到 `addr7=0x3C addr8=0x78`。
 
+如果 `Config.h` 中的 Wi-Fi 仍是占位符，或 ESP32 无法连接目标 Wi-Fi，设备会自动进入 AP 配网模式：
+
+- 手机连接 `AMap-ESP32-xxxxxx` 热点。
+- 系统通常会自动弹出配网页面；没有弹出时手动访问 `http://192.168.4.1/`。
+- 页面会显示当前 Wi-Fi 状态、STA IP、UDP 端口、配网热点状态，并可保存新的 Wi-Fi 名称和密码。
+- 配网保存后 ESP32 会自动重连；连接成功后配网热点会关闭。
+- 已连接 Wi-Fi 后，也可以通过 ESP32 串口打印的 STA IP 访问同一个状态/配网页面。
+
+### OTA 升级
+
+ESP32 固件支持 dev/stable 双渠道 OTA。设备只访问你配置的国内 OTA 服务器，不直接访问 GitHub。
+
+- GitHub Actions 会在 push 到 `dev` 时构建 dev 固件，在 push 到 `main` 或 `master` 时构建 stable 固件。
+- CI 产物包含 `firmware.bin`、`firmware.sha256`、`manifest.json`，同时上传为 artifact，并发布到滚动 Release：`ota-dev-latest` / `ota-stable-latest`。
+- 国内服务器可用 `scripts/sync_ota_from_github.py` 从 GitHub artifact 或 Release 拉取产物，落盘到 `/ota/dev/` 和 `/ota/stable/`。
+- ESP32 联网后按 `OTA_BASE_URL` + `OTA_CHANNEL` 请求 manifest；发现新版本后只在配置页面提示，不会自动升级。
+- 在配置页面点击“检查更新”后可看到当前版本、当前渠道、最新版本、构建信息和错误信息；点击“立即升级”才会下载 `firmware.bin`、校验 SHA256 并写入 OTA 分区。
+
+示例服务器目录：
+
+```text
+/var/www/html/ota/dev/manifest.json
+/var/www/html/ota/dev/firmware.bin
+/var/www/html/ota/stable/manifest.json
+/var/www/html/ota/stable/firmware.bin
+```
+
 ### 2. 配置 Android
 
 用 Android Studio 打开 `android_forwarder/`，安装到手机或车机侧 Android 设备。

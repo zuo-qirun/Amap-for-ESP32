@@ -1,0 +1,97 @@
+name: ESP32 OTA Build
+
+on:
+  push:
+    branches:
+      - dev
+      - main
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  build-esp32-ota:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: esp32_display
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set OTA metadata
+        id: meta
+        shell: bash
+        run: |
+          branch="${GITHUB_REF_NAME}"
+          if [[ "$branch" == "dev" ]]; then
+            channel="dev"
+          else
+            channel="stable"
+          fi
+
+          short_sha="$(git rev-parse --short=12 HEAD)"
+          version="${OTA_VERSION:-0.1.${GITHUB_RUN_NUMBER}}"
+          build_number="${GITHUB_RUN_NUMBER}"
+          firmware_url="${OTA_FIRMWARE_URL:-firmware.bin}"
+          min_supported="${OTA_MIN_SUPPORTED_VERSION:-}"
+          release_notes="${OTA_RELEASE_NOTES:-${channel} build ${version} (${short_sha})}"
+
+          {
+            echo "channel=${channel}"
+            echo "version=${version}"
+            echo "build_number=${build_number}"
+            echo "short_sha=${short_sha}"
+            echo "firmware_url=${firmware_url}"
+            echo "min_supported=${min_supported}"
+            echo "release_notes=${release_notes}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PlatformIO
+        run: python -m pip install --upgrade platformio
+
+      - name: Build firmware
+        run: |
+          pio run -e esp32-s3-devkitm-1 \
+            --project-option='build_flags=-D ARDUINO_USB_MODE=1 -D ARDUINO_USB_CDC_ON_BOOT=1 -D AMAP_FIRMWARE_VERSION=\"${{ steps.meta.outputs.version }}\" -D AMAP_FIRMWARE_BUILD=${{ steps.meta.outputs.build_number }} -D AMAP_FIRMWARE_CHANNEL=\"${{ steps.meta.outputs.channel }}\"'
+
+      - name: Package OTA artifacts
+        run: |
+          python scripts/package_ota.py \
+            --firmware .pio/build/esp32-s3-devkitm-1/firmware.bin \
+            --out-dir dist/${{ steps.meta.outputs.channel }} \
+            --channel ${{ steps.meta.outputs.channel }} \
+            --version "${{ steps.meta.outputs.version }}" \
+            --build-number ${{ steps.meta.outputs.build_number }} \
+            --git-branch "${GITHUB_REF_NAME}" \
+            --git-commit "${GITHUB_SHA}" \
+            --firmware-url "${{ steps.meta.outputs.firmware_url }}" \
+            --min-supported-version "${{ steps.meta.outputs.min_supported }}" \
+            --release-notes "${{ steps.meta.outputs.release_notes }}"
+
+      - name: Upload OTA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: amap-esp32-${{ steps.meta.outputs.channel }}-${{ steps.meta.outputs.version }}-${{ steps.meta.outputs.short_sha }}
+          path: esp32_display/dist/${{ steps.meta.outputs.channel }}/*
+          if-no-files-found: error
+
+      - name: Publish rolling GitHub Release
+        if: github.ref_name == 'dev' || github.ref_name == 'main' || github.ref_name == 'master'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ota-${{ steps.meta.outputs.channel }}-latest
+          name: OTA ${{ steps.meta.outputs.channel }} latest
+          prerelease: ${{ steps.meta.outputs.channel == 'dev' }}
+          overwrite_files: true
+          make_latest: false
+          files: esp32_display/dist/${{ steps.meta.outputs.channel }}/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

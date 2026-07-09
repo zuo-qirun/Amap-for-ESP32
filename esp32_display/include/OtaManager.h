@@ -3,6 +3,10 @@
 #include <Arduino.h>
 #include <Preferences.h>
 
+class HTTPClient;
+class WiFiClient;
+class WiFiClientSecure;
+
 struct OtaManifest {
   String channel;
   String version;
@@ -33,6 +37,8 @@ public:
   String currentVersion() const;
   uint32_t currentBuild() const;
   String currentChannel() const;
+  String selectedChannel() const;
+  bool setSelectedChannel(const String& channel);
   String latestVersion() const;
   uint32_t latestBuild() const;
   String latestChannel() const;
@@ -61,6 +67,7 @@ private:
   bool healthyMarked = false;
   bool fallbackAttempted = false;
   uint32_t devBootAttempts = 0;
+  String selectedChannelName;
 
   String channelManifestUrl(const String& channel) const;
   bool fetchManifest(const String& channel, OtaManifest& out, String& error);
@@ -68,6 +75,15 @@ private:
   bool isManifestNewer(const OtaManifest& manifest) const;
   bool installManifest(const OtaManifest& manifest, String& error);
   bool downloadAndInstall(const OtaManifest& manifest, String& error);
+  bool openHttpGet(String& url,
+                   HTTPClient& http,
+                   WiFiClient& plainClient,
+                   WiFiClientSecure& secureClient,
+                   int& code,
+                   String& error);
+  void loadSelectedChannel();
+  void clearLatestState();
+  String defaultSelectedChannel() const;
   bool markHealthy();
   void noteBoot();
   bool shouldAttemptDevFallback(bool networkConnected, bool webReady, bool oledReady);

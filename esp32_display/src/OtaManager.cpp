@@ -15,6 +15,8 @@ const char* OTA_PREF_BOOT_ATTEMPTS = "boot_attempts";
 const char* OTA_PREF_VERSION = "version";
 const char* OTA_PREF_BUILD = "build";
 const char* OTA_PREF_CHANNEL = "channel";
+const char* OTA_PREF_SELECTED_CHANNEL = "selected_channel";
+const uint8_t OTA_HTTP_REDIRECT_LIMIT = 4;
 
 String hexByte(uint8_t value) {
   const char* digits = "0123456789abcdef";
@@ -27,20 +29,28 @@ String hexByte(uint8_t value) {
 
 void OtaManager::begin() {
   bootStartedAt = millis();
+  loadSelectedChannel();
   noteBoot();
+  Serial.printf("OTA boot: channel=%s version=%s build=%lu selected=%s attempts=%lu healthy=%s\n",
+                currentChannel().c_str(),
+                currentVersion().c_str(),
+                static_cast<unsigned long>(currentBuild()),
+                selectedChannel().c_str(),
+                static_cast<unsigned long>(devBootAttempts),
+                healthyMarked ? "true" : "false");
 }
 
 void OtaManager::update(bool networkConnected, bool webReady, bool oledReady) {
-  unsigned long now = millis();
+  const unsigned long now = millis();
+  if (!healthyMarked && networkConnected && webReady && oledReady &&
+      now - bootStartedAt >= OTA_HEALTHY_MARK_DELAY_MS) {
+    markHealthy();
+  }
+
   if (shouldAttemptDevFallback(networkConnected, webReady, oledReady)) {
     fallbackAttempted = true;
     fallbackToStableNow();
     return;
-  }
-
-  if (!healthyMarked && networkConnected && webReady && oledReady &&
-      now - bootStartedAt >= OTA_HEALTHY_MARK_DELAY_MS) {
-    markHealthy();
   }
 
   if (networkConnected && !isBusy() &&
@@ -51,16 +61,19 @@ void OtaManager::update(bool networkConnected, bool webReady, bool oledReady) {
 
 bool OtaManager::checkNow() {
   if (isBusy()) {
-    lastError = "OTA 正忙，请稍后再试";
+    lastError = "OTA 正忙，请稍后再试。";
     return false;
   }
+
   state = State::Checking;
   lastError = "";
   lastCheckAt = millis();
+  clearLatestState();
 
   OtaManifest manifest;
   String error;
-  if (!fetchManifest(OTA_CHANNEL, manifest, error)) {
+  const String channel = selectedChannel();
+  if (!fetchManifest(channel, manifest, error)) {
     lastError = error;
     state = State::Error;
     return false;
@@ -73,10 +86,10 @@ bool OtaManager::checkNow() {
 
 bool OtaManager::upgradeNow() {
   if (isBusy()) {
-    lastError = "OTA 正忙，请稍后再试";
+    lastError = "OTA 正忙，请稍后再试。";
     return false;
   }
-  if (latest.firmwareUrl.isEmpty()) {
+  if (latest.firmwareUrl.isEmpty() || latest.channel != selectedChannel()) {
     if (!checkNow()) {
       return false;
     }
@@ -134,6 +147,33 @@ String OtaManager::currentChannel() const {
   return OTA_CHANNEL;
 }
 
+String OtaManager::selectedChannel() const {
+  return selectedChannelName.isEmpty() ? defaultSelectedChannel() : selectedChannelName;
+}
+
+bool OtaManager::setSelectedChannel(const String& channel) {
+  if (channel != "stable" && channel != "dev") {
+    lastError = "不支持的 OTA 渠道：" + channel;
+    return false;
+  }
+
+  Preferences p;
+  if (!p.begin(OTA_PREF_NAMESPACE, false)) {
+    lastError = "无法打开 OTA 配置存储。";
+    return false;
+  }
+  p.putString(OTA_PREF_SELECTED_CHANNEL, channel);
+  p.end();
+
+  selectedChannelName = channel;
+  clearLatestState();
+  lastError = "";
+  state = State::Idle;
+  lastCheckAt = 0;
+  Serial.printf("OTA selected channel changed: %s\n", selectedChannelName.c_str());
+  return true;
+}
+
 String OtaManager::latestVersion() const {
   return latest.version;
 }
@@ -165,7 +205,7 @@ String OtaManager::releaseNotes() const {
 }
 
 String OtaManager::manifestUrl() const {
-  return channelManifestUrl(OTA_CHANNEL);
+  return channelManifestUrl(selectedChannel());
 }
 
 String OtaManager::firmwareUrl() const {
@@ -174,11 +214,12 @@ String OtaManager::firmwareUrl() const {
 
 String OtaManager::statusJson() const {
   String json;
-  json.reserve(900);
+  json.reserve(960);
   json += "{";
   json += "\"currentVersion\":\"" + jsonEscape(currentVersion()) + "\"";
   json += ",\"currentBuild\":" + String(currentBuild());
   json += ",\"currentChannel\":\"" + jsonEscape(currentChannel()) + "\"";
+  json += ",\"selectedChannel\":\"" + jsonEscape(selectedChannel()) + "\"";
   json += ",\"latestVersion\":\"" + jsonEscape(latestVersion()) + "\"";
   json += ",\"latestBuild\":" + String(latestBuild());
   json += ",\"latestChannel\":\"" + jsonEscape(latestChannel()) + "\"";
@@ -206,34 +247,27 @@ String OtaManager::channelManifestUrl(const String& channel) const {
 bool OtaManager::fetchManifest(const String& channel, OtaManifest& out, String& error) {
   String url = channelManifestUrl(channel);
   WiFiClient plainClient;
-  WiFiClientSecure client;
-  WiFiClient* transport = &plainClient;
-  if (url.startsWith("https://")) {
-    client.setInsecure();
-    transport = &client;
-  }
+  WiFiClientSecure secureClient;
   HTTPClient http;
-  http.setTimeout(OTA_HTTP_TIMEOUT_MS);
-  if (!http.begin(*transport, url)) {
-    error = "无法打开 manifest URL: " + url;
+  int code = 0;
+  if (!openHttpGet(url, http, plainClient, secureClient, code, error)) {
     return false;
   }
-  int code = http.GET();
   if (code != HTTP_CODE_OK) {
     error = "manifest HTTP " + String(code);
     http.end();
     return false;
   }
-  String payload = http.getString();
+  const String payload = http.getString();
   http.end();
   return parseManifest(payload, out, error);
 }
 
 bool OtaManager::parseManifest(const String& payload, OtaManifest& out, String& error) const {
   JsonDocument doc;
-  DeserializationError jsonError = deserializeJson(doc, payload);
+  const DeserializationError jsonError = deserializeJson(doc, payload);
   if (jsonError) {
-    error = "manifest JSON 解析失败: ";
+    error = "manifest JSON 解析失败：";
     error += jsonError.c_str();
     return false;
   }
@@ -281,9 +315,14 @@ bool OtaManager::isManifestNewer(const OtaManifest& manifest) const {
 bool OtaManager::installManifest(const OtaManifest& manifest, String& error) {
   state = State::Upgrading;
   error = "";
+  Serial.printf("OTA install start: target_channel=%s target_version=%s target_build=%lu\n",
+                manifest.channel.c_str(),
+                manifest.version.c_str(),
+                static_cast<unsigned long>(manifest.buildNumber));
   if (!downloadAndInstall(manifest, error)) {
     lastError = error;
     state = State::Error;
+    Serial.printf("OTA install failed: %s\n", error.c_str());
     return false;
   }
   return true;
@@ -296,28 +335,20 @@ bool OtaManager::downloadAndInstall(const OtaManifest& manifest, String& error) 
     return false;
   }
 
-  WiFiClientSecure client;
   WiFiClient plainClient;
-  WiFiClient* transport = &plainClient;
-  if (url.startsWith("https://")) {
-    client.setInsecure();
-    transport = &client;
-  }
+  WiFiClientSecure secureClient;
   HTTPClient http;
-  http.setTimeout(OTA_HTTP_TIMEOUT_MS);
-  if (!http.begin(*transport, url)) {
-    error = "无法打开固件 URL: " + url;
+  int code = 0;
+  if (!openHttpGet(url, http, plainClient, secureClient, code, error)) {
     return false;
   }
-
-  int code = http.GET();
   if (code != HTTP_CODE_OK) {
     error = "固件下载 HTTP " + String(code);
     http.end();
     return false;
   }
 
-  int contentLength = http.getSize();
+  const int contentLength = http.getSize();
   if (contentLength <= 0) {
     error = "固件大小无效";
     http.end();
@@ -329,7 +360,7 @@ bool OtaManager::downloadAndInstall(const OtaManifest& manifest, String& error) 
     return false;
   }
   if (!Update.begin(static_cast<size_t>(contentLength), U_FLASH)) {
-    error = "Update.begin 失败: " + String(Update.errorString());
+    error = "Update.begin 失败：" + String(Update.errorString());
     http.end();
     return false;
   }
@@ -344,7 +375,7 @@ bool OtaManager::downloadAndInstall(const OtaManifest& manifest, String& error) 
   unsigned long lastDataAt = millis();
 
   while (http.connected() && written < static_cast<size_t>(contentLength)) {
-    size_t available = stream->available();
+    const size_t available = stream->available();
     if (available == 0) {
       if (millis() - lastDataAt > OTA_HTTP_TIMEOUT_MS) {
         error = "固件下载超时";
@@ -357,16 +388,16 @@ bool OtaManager::downloadAndInstall(const OtaManifest& manifest, String& error) 
       continue;
     }
 
-    size_t readLen = min(available, sizeof(buffer));
-    int bytesRead = stream->readBytes(buffer, readLen);
+    const size_t readLen = min(available, sizeof(buffer));
+    const int bytesRead = stream->readBytes(buffer, readLen);
     if (bytesRead <= 0) {
       continue;
     }
     lastDataAt = millis();
     mbedtls_sha256_update(&shaCtx, buffer, static_cast<size_t>(bytesRead));
-    size_t bytesWritten = Update.write(buffer, static_cast<size_t>(bytesRead));
+    const size_t bytesWritten = Update.write(buffer, static_cast<size_t>(bytesRead));
     if (bytesWritten != static_cast<size_t>(bytesRead)) {
-      error = "固件写入失败: " + String(Update.errorString());
+      error = "固件写入失败：" + String(Update.errorString());
       Update.abort();
       mbedtls_sha256_free(&shaCtx);
       http.end();
@@ -393,7 +424,7 @@ bool OtaManager::downloadAndInstall(const OtaManifest& manifest, String& error) 
   }
 
   if (!Update.end(true)) {
-    error = "Update.end 失败: " + String(Update.errorString());
+    error = "Update.end 失败：" + String(Update.errorString());
     http.end();
     return false;
   }
@@ -409,9 +440,77 @@ bool OtaManager::downloadAndInstall(const OtaManifest& manifest, String& error) 
     p.end();
   }
 
+  Serial.printf("OTA install complete: channel=%s version=%s build=%lu, rebooting\n",
+                manifest.channel.c_str(),
+                manifest.version.c_str(),
+                static_cast<unsigned long>(manifest.buildNumber));
   delay(300);
   ESP.restart();
   return true;
+}
+
+bool OtaManager::openHttpGet(String& url,
+                             HTTPClient& http,
+                             WiFiClient& plainClient,
+                             WiFiClientSecure& secureClient,
+                             int& code,
+                             String& error) {
+  for (uint8_t attempt = 0; attempt <= OTA_HTTP_REDIRECT_LIMIT; ++attempt) {
+    http.end();
+    http.setTimeout(OTA_HTTP_TIMEOUT_MS);
+
+    bool started = false;
+    if (url.startsWith("https://")) {
+      secureClient.setInsecure();
+      started = http.begin(secureClient, url);
+    } else {
+      started = http.begin(plainClient, url);
+    }
+
+    if (!started) {
+      error = "无法打开 URL：" + url;
+      return false;
+    }
+
+    code = http.GET();
+    if (code == HTTP_CODE_MOVED_PERMANENTLY || code == HTTP_CODE_FOUND ||
+        code == HTTP_CODE_SEE_OTHER || code == HTTP_CODE_TEMPORARY_REDIRECT ||
+        code == HTTP_CODE_PERMANENT_REDIRECT) {
+      const String location = http.getLocation();
+      if (location.isEmpty()) {
+        error = "重定向缺少 Location：" + url;
+        return false;
+      }
+      Serial.printf("HTTP redirect: %s -> %s (%d)\n", url.c_str(), location.c_str(), code);
+      url = location;
+      continue;
+    }
+    return true;
+  }
+
+  error = "重定向次数过多：" + url;
+  return false;
+}
+
+void OtaManager::loadSelectedChannel() {
+  selectedChannelName = defaultSelectedChannel();
+  Preferences p;
+  if (!p.begin(OTA_PREF_NAMESPACE, true)) {
+    return;
+  }
+  const String stored = p.getString(OTA_PREF_SELECTED_CHANNEL, selectedChannelName);
+  p.end();
+  if (stored == "stable" || stored == "dev") {
+    selectedChannelName = stored;
+  }
+}
+
+void OtaManager::clearLatestState() {
+  latest = OtaManifest{};
+}
+
+String OtaManager::defaultSelectedChannel() const {
+  return String(OTA_CHANNEL);
 }
 
 bool OtaManager::markHealthy() {
@@ -427,6 +526,10 @@ bool OtaManager::markHealthy() {
   p.putString(OTA_PREF_CHANNEL, currentChannel());
   p.end();
   devBootAttempts = 0;
+  Serial.printf("OTA marked healthy: channel=%s version=%s build=%lu\n",
+                currentChannel().c_str(),
+                currentVersion().c_str(),
+                static_cast<unsigned long>(currentBuild()));
   return true;
 }
 
@@ -435,12 +538,12 @@ void OtaManager::noteBoot() {
   if (!p.begin(OTA_PREF_NAMESPACE, false)) {
     return;
   }
-  bool wasHealthy = p.getBool(OTA_PREF_HEALTHY, false);
-  String storedVersion = p.getString(OTA_PREF_VERSION, "");
-  uint32_t storedBuild = p.getUInt(OTA_PREF_BUILD, 0);
-  String storedChannel = p.getString(OTA_PREF_CHANNEL, "");
-  bool sameFirmware = storedVersion == currentVersion() && storedBuild == currentBuild() &&
-                      storedChannel == currentChannel();
+  const bool wasHealthy = p.getBool(OTA_PREF_HEALTHY, false);
+  const String storedVersion = p.getString(OTA_PREF_VERSION, "");
+  const uint32_t storedBuild = p.getUInt(OTA_PREF_BUILD, 0);
+  const String storedChannel = p.getString(OTA_PREF_CHANNEL, "");
+  const bool sameFirmware = storedVersion == currentVersion() && storedBuild == currentBuild() &&
+                            storedChannel == currentChannel();
   devBootAttempts = p.getUInt(OTA_PREF_BOOT_ATTEMPTS, 0);
   if (!sameFirmware || wasHealthy) {
     devBootAttempts = 0;
@@ -452,6 +555,14 @@ void OtaManager::noteBoot() {
   p.putUInt(OTA_PREF_BUILD, currentBuild());
   p.putString(OTA_PREF_CHANNEL, currentChannel());
   p.end();
+  healthyMarked = false;
+  Serial.printf("OTA note boot: stored=%s/%lu/%s wasHealthy=%s sameFirmware=%s attempts=%lu\n",
+                storedVersion.c_str(),
+                static_cast<unsigned long>(storedBuild),
+                storedChannel.c_str(),
+                wasHealthy ? "true" : "false",
+                sameFirmware ? "true" : "false",
+                static_cast<unsigned long>(devBootAttempts));
 }
 
 bool OtaManager::shouldAttemptDevFallback(bool networkConnected, bool webReady, bool oledReady) {
@@ -460,6 +571,14 @@ bool OtaManager::shouldAttemptDevFallback(bool networkConnected, bool webReady, 
   }
   if (devBootAttempts <= OTA_FALLBACK_MAX_DEV_BOOT_ATTEMPTS) {
     return false;
+  }
+  if (millis() - bootStartedAt < OTA_HEALTHY_MARK_DELAY_MS) {
+    return false;
+  }
+  if (networkConnected && webReady && oledReady) {
+    Serial.printf("OTA fallback triggered: attempts=%lu channel=%s\n",
+                  static_cast<unsigned long>(devBootAttempts),
+                  currentChannel().c_str());
   }
   return networkConnected && webReady && oledReady;
 }
@@ -471,26 +590,26 @@ String OtaManager::resolveFirmwareUrl(const OtaManifest& manifest) const {
   if (manifest.firmwareUrl.startsWith("/")) {
     return normalizeBaseUrl() + manifest.firmwareUrl;
   }
-  String channel = manifest.channel.isEmpty() ? String(OTA_CHANNEL) : manifest.channel;
+  const String channel = manifest.channel.isEmpty() ? selectedChannel() : manifest.channel;
   return normalizeBaseUrl() + "/" + channel + "/" + manifest.firmwareUrl;
 }
 
 String OtaManager::stateName() const {
   switch (state) {
     case State::Idle:
-      return "idle";
+      return "空闲";
     case State::Checking:
-      return "checking";
+      return "检查中";
     case State::UpdateAvailable:
-      return "update_available";
+      return "发现更新";
     case State::UpToDate:
-      return "up_to_date";
+      return "已是最新";
     case State::Upgrading:
-      return "upgrading";
+      return "升级中";
     case State::Error:
-      return "error";
+      return "错误";
   }
-  return "unknown";
+  return "未知";
 }
 
 String OtaManager::jsonEscape(String value) const {
@@ -514,8 +633,8 @@ bool OtaManager::isHexSha256(const String& value) {
     return false;
   }
   for (size_t i = 0; i < value.length(); ++i) {
-    char c = value[i];
-    bool hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+    const char c = value[i];
+    const bool hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
     if (!hex) {
       return false;
     }
@@ -535,8 +654,8 @@ int OtaManager::compareVersions(const String& lhs, const String& rhs) {
     if (rightDot < 0) {
       rightDot = rhs.length();
     }
-    long leftPart = lhs.substring(leftStart, leftDot).toInt();
-    long rightPart = rhs.substring(rightStart, rightDot).toInt();
+    const long leftPart = lhs.substring(leftStart, leftDot).toInt();
+    const long rightPart = rhs.substring(rightStart, rightDot).toInt();
     if (leftPart != rightPart) {
       return leftPart > rightPart ? 1 : -1;
     }

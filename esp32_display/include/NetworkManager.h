@@ -62,6 +62,7 @@ private:
   void handleClear();
   void handleOtaCheck();
   void handleOtaUpgrade();
+  bool applyOtaChannelSelection(String& message);
   void handleStatusJson();
   void handleNotFound();
   void redirectToPortal();
@@ -73,4 +74,5 @@ private:
   String jsonEscape(String value) const;
   String makePortalSsid() const;
   void beginUdpIfNeeded();
+  bool isPortalRadioActive() const;
 };

@@ -432,6 +432,9 @@ bool NetworkManager::applyOtaChannelSelection(String& message) {
   if (channel.isEmpty()) {
     return true;
   }
+  if (channel == otaManager->selectedChannel()) {
+    return true;
+  }
   if (!otaManager->setSelectedChannel(channel)) {
     message = otaManager->lastErrorText();
     return false;

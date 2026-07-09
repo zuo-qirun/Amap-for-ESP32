@@ -17,6 +17,7 @@ android_forwarder/local.properties
 esp32_display/.pio/
 esp32_display/.vscode/
 esp32_display/dist/
+esp32_display/platformio-ci.ini
 
 # Build outputs
 *.apk

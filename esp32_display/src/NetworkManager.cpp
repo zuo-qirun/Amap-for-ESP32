@@ -1,7 +1,7 @@
 #include "NetworkManager.h"
 
 #include "Config.h"
-#include <ESP.h>
+#include <Esp.h>
 
 namespace {
 const byte DNS_PORT = 53;

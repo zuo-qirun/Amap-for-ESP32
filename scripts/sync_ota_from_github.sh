@@ -8,7 +8,7 @@ set -euo pipefail
 CHANNEL="${1:-stable}"
 SOURCE="${2:-release}"
 REPO="${GITHUB_REPO:-zuo-qirun/Amap-for-ESP32}"
-WEB_ROOT="${OTA_WEB_ROOT:-/var/www/html/ota}"
+WEB_ROOT="${OTA_WEB_ROOT:-/www/wwwroot/ota.zuoqirun.top/ota}"
 
 python3 "$(dirname "$0")/sync_ota_from_github.py" \
   --repo "$REPO" \

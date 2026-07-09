@@ -32,9 +32,9 @@
 
 // OTA. ESP32 downloads manifests and firmware only from your domestic server.
 // Example final URLs:
-//   https://example.cn/ota/dev/manifest.json
-//   https://example.cn/ota/stable/firmware.bin
-#define OTA_BASE_URL "https://example.cn/ota"
+//   http://ota.zuoqirun.top/ota/dev/manifest.json
+//   http://ota.zuoqirun.top/ota/stable/firmware.bin
+#define OTA_BASE_URL "http://ota.zuoqirun.top/ota"
 #define OTA_CHANNEL AMAP_FIRMWARE_CHANNEL
 #define OTA_CHECK_INTERVAL_MS 3600000UL
 #define OTA_HTTP_TIMEOUT_MS 15000UL

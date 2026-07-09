@@ -139,18 +139,20 @@ ESP32 固件支持 dev/stable 双渠道 OTA。设备只访问你配置的国内 
 
 - GitHub Actions 会在 push 到 `dev` 时构建 dev 固件，在 push 到 `main` 或 `master` 时构建 stable 固件。
 - CI 产物包含 `firmware.bin`、`firmware.sha256`、`manifest.json`，同时上传为 artifact，并发布到滚动 Release：`ota-dev-latest` / `ota-stable-latest`。
-- 国内服务器可用 `scripts/sync_ota_from_github.py` 从 GitHub artifact 或 Release 拉取产物，落盘到 `/ota/dev/` 和 `/ota/stable/`。
+- 国内服务器可用 `scripts/sync_ota_from_github.py` 从 GitHub artifact 或 Release 拉取产物，落盘到宝塔站点 `/www/wwwroot/ota.zuoqirun.top/ota/dev/` 和 `/www/wwwroot/ota.zuoqirun.top/ota/stable/`。
 - ESP32 联网后按 `OTA_BASE_URL` + `OTA_CHANNEL` 请求 manifest；发现新版本后只在配置页面提示，不会自动升级。
 - 在配置页面点击“检查更新”后可看到当前版本、当前渠道、最新版本、构建信息和错误信息；点击“立即升级”才会下载 `firmware.bin`、校验 SHA256 并写入 OTA 分区。
 
 示例服务器目录：
 
 ```text
-/var/www/html/ota/dev/manifest.json
-/var/www/html/ota/dev/firmware.bin
-/var/www/html/ota/stable/manifest.json
-/var/www/html/ota/stable/firmware.bin
+/www/wwwroot/ota.zuoqirun.top/ota/dev/manifest.json
+/www/wwwroot/ota.zuoqirun.top/ota/dev/firmware.bin
+/www/wwwroot/ota.zuoqirun.top/ota/stable/manifest.json
+/www/wwwroot/ota.zuoqirun.top/ota/stable/firmware.bin
 ```
+
+当前 OTA 服务器按宝塔面板独立站点管理：`ota.zuoqirun.top`，站点根目录 `/www/wwwroot/ota.zuoqirun.top`，ESP32 默认 OTA 根地址为 `http://ota.zuoqirun.top/ota`。DNS 解析生效并在宝塔为该站点申请 SSL 后，可切换为 `https://ota.zuoqirun.top/ota`。
 
 ### 2. 配置 Android
 

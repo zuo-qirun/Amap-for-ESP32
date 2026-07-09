@@ -23,7 +23,7 @@ ESP32-S3 PlatformIO + Arduino 工程，接收 Android App 发来的 UDP JSON，�
 ```cpp
 #define AMAP_WIFI_SSID "car_hotspot_ssid"
 #define AMAP_WIFI_PASSWORD "car_hotspot_password"
-#define OTA_BASE_URL "https://example.cn/ota"
+#define OTA_BASE_URL "http://ota.zuoqirun.top/ota"
 #define OTA_CHANNEL AMAP_FIRMWARE_CHANNEL
 #define AMAP_UDP_PORT 4210
 #define AMAP_OLED_SDA_PIN 8
@@ -119,33 +119,35 @@ python3 scripts/sync_ota_from_github.py \
   --repo zuo-qirun/Amap-for-ESP32 \
   --channel stable \
   --source release \
-  --web-root /var/www/html/ota
+  --web-root /www/wwwroot/ota.zuoqirun.top/ota
 
 # 从 Actions artifact 同步 dev，需要 token
 GITHUB_TOKEN=<github-token> python3 scripts/sync_ota_from_github.py \
   --repo zuo-qirun/Amap-for-ESP32 \
   --channel dev \
   --source artifact \
-  --web-root /var/www/html/ota
+  --web-root /www/wwwroot/ota.zuoqirun.top/ota
 ```
 
 同步后的目录：
 
 ```text
-/var/www/html/ota/dev/manifest.json
-/var/www/html/ota/dev/firmware.bin
-/var/www/html/ota/dev/firmware.sha256
-/var/www/html/ota/stable/manifest.json
-/var/www/html/ota/stable/firmware.bin
-/var/www/html/ota/stable/firmware.sha256
+/www/wwwroot/ota.zuoqirun.top/ota/dev/manifest.json
+/www/wwwroot/ota.zuoqirun.top/ota/dev/firmware.bin
+/www/wwwroot/ota.zuoqirun.top/ota/dev/firmware.sha256
+/www/wwwroot/ota.zuoqirun.top/ota/stable/manifest.json
+/www/wwwroot/ota.zuoqirun.top/ota/stable/firmware.bin
+/www/wwwroot/ota.zuoqirun.top/ota/stable/firmware.sha256
 ```
 
 ESP32 只需要访问国内服务器，例如：
 
 ```cpp
-#define OTA_BASE_URL "https://your-domain.example/ota"
+#define OTA_BASE_URL "http://ota.zuoqirun.top/ota"
 #define OTA_CHANNEL "stable"
 ```
+
+当前服务器使用宝塔面板管理，独立站点为 `ota.zuoqirun.top`，站点根目录为 `/www/wwwroot/ota.zuoqirun.top`。DNS 解析生效前可以先完成站点和同步脚本部署；解析生效后建议在宝塔面板为该站点申请 SSL，再把 `OTA_BASE_URL` 切换为 `https://ota.zuoqirun.top/ota`。
 
 ### 手动升级流程
 

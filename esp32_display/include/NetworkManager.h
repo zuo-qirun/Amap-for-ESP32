@@ -65,6 +65,7 @@ private:
   bool applyOtaChannelSelection(String& message);
   void handleStatusJson();
   void handleNotFound();
+  void redirectToRoot();
   void redirectToPortal();
   bool shouldRedirectToPortal();
   String buildStatusPage(const String& message = String()) const;

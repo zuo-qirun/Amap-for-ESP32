@@ -4,6 +4,8 @@
 #include <HTTPClient.h>
 #include <Update.h>
 #include <WiFiClientSecure.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <mbedtls/sha256.h>
 
 #include "Config.h"
@@ -17,6 +19,14 @@ const char* OTA_PREF_BUILD = "build";
 const char* OTA_PREF_CHANNEL = "channel";
 const char* OTA_PREF_SELECTED_CHANNEL = "selected_channel";
 const uint8_t OTA_HTTP_REDIRECT_LIMIT = 4;
+const uint32_t OTA_PROGRESS_DOWNLOAD_MAX = 96;
+const uint32_t OTA_TASK_STACK_SIZE = 10240;
+const UBaseType_t OTA_TASK_PRIORITY = 1;
+
+struct OtaTaskContext {
+  OtaManager* manager;
+  OtaManifest manifest;
+};
 
 String hexByte(uint8_t value) {
   const char* digits = "0123456789abcdef";
@@ -28,6 +38,7 @@ String hexByte(uint8_t value) {
 }  // namespace
 
 void OtaManager::begin() {
+  ensureStateMutex();
   bootStartedAt = millis();
   loadSelectedChannel();
   noteBoot();
@@ -60,6 +71,44 @@ void OtaManager::update(bool networkConnected, bool webReady, bool oledReady) {
 }
 
 bool OtaManager::checkNow() {
+  {
+    ensureStateMutex();
+    if (isBusy()) {
+      lockState();
+      lastError = "OTA 正忙，请稍后再试。";
+      unlockState();
+      return false;
+    }
+
+    lockState();
+    state = State::Checking;
+    lastError = "";
+    lastCheckAt = millis();
+    clearLatestState();
+    resetProgressLocked();
+    progressStatus = "正在检查更新";
+    unlockState();
+
+    OtaManifest manifestCopy;
+    String errorCopy;
+    const String channel = selectedChannel();
+    if (!fetchManifest(channel, manifestCopy, errorCopy)) {
+      lockState();
+      lastError = errorCopy;
+      state = State::Error;
+      progressStatus = "检查失败";
+      unlockState();
+      return false;
+    }
+
+    const bool newer = isManifestNewer(manifestCopy);
+    lockState();
+    latest = manifestCopy;
+    state = newer ? State::UpdateAvailable : State::UpToDate;
+    progressStatus = newer ? "发现可用更新" : "当前已经是最新版本";
+    unlockState();
+    return true;
+  }
   if (isBusy()) {
     lastError = "OTA 正忙，请稍后再试。";
     return false;
@@ -85,6 +134,40 @@ bool OtaManager::checkNow() {
 }
 
 bool OtaManager::upgradeNow() {
+  {
+    ensureStateMutex();
+    if (isBusy()) {
+      lockState();
+      lastError = "OTA 正忙，请稍后再试。";
+      unlockState();
+      return false;
+    }
+
+    OtaManifest manifestCopy;
+    lockState();
+    manifestCopy = latest;
+    unlockState();
+
+    if (manifestCopy.firmwareUrl.isEmpty() || manifestCopy.channel != selectedChannel()) {
+      if (!checkNow()) {
+        return false;
+      }
+      lockState();
+      manifestCopy = latest;
+      unlockState();
+    }
+    if (!isManifestNewer(manifestCopy)) {
+      lockState();
+      state = State::UpToDate;
+      lastError = "当前已经是最新版本。";
+      progressStatus = "当前已经是最新版本";
+      unlockState();
+      return false;
+    }
+
+    String errorCopy;
+    return installManifest(manifestCopy, errorCopy);
+  }
   if (isBusy()) {
     lastError = "OTA 正忙，请稍后再试。";
     return false;
@@ -103,6 +186,32 @@ bool OtaManager::upgradeNow() {
 }
 
 bool OtaManager::fallbackToStableNow() {
+  {
+    ensureStateMutex();
+    if (isBusy()) {
+      return false;
+    }
+
+    lockState();
+    state = State::Checking;
+    lastError = "";
+    resetProgressLocked();
+    progressStatus = "正在检查 stable 回退包";
+    unlockState();
+
+    OtaManifest stableManifest;
+    String errorCopy;
+    if (!fetchManifest("stable", stableManifest, errorCopy)) {
+      lockState();
+      lastError = "stable 回退检查失败：" + errorCopy;
+      state = State::Error;
+      progressStatus = "回退检查失败";
+      unlockState();
+      return false;
+    }
+
+    return installManifest(stableManifest, errorCopy);
+  }
   if (isBusy()) {
     return false;
   }
@@ -120,10 +229,23 @@ bool OtaManager::fallbackToStableNow() {
 }
 
 bool OtaManager::updateAvailable() const {
+  {
+    lockState();
+    const State currentState = state;
+    const OtaManifest manifestCopy = latest;
+    unlockState();
+    return currentState == State::UpdateAvailable && isManifestNewer(manifestCopy);
+  }
   return state == State::UpdateAvailable && isManifestNewer(latest);
 }
 
 bool OtaManager::isBusy() const {
+  {
+    lockState();
+    const bool busy = state == State::Checking || state == State::Upgrading;
+    unlockState();
+    return busy;
+  }
   return state == State::Checking || state == State::Upgrading;
 }
 
@@ -132,6 +254,12 @@ String OtaManager::statusText() const {
 }
 
 String OtaManager::lastErrorText() const {
+  {
+    lockState();
+    const String errorCopy = lastError;
+    unlockState();
+    return errorCopy;
+  }
   return lastError;
 }
 
@@ -152,10 +280,51 @@ String OtaManager::selectedChannel() const {
 }
 
 bool OtaManager::setSelectedChannel(const String& channel) {
+  {
+    ensureStateMutex();
+    if (channel != "stable" && channel != "dev") {
+      lockState();
+      lastError = "不支持的 OTA 渠道：" + channel;
+      unlockState();
+      return false;
+    }
+    if (channel == selectedChannel()) {
+      lockState();
+      lastError = "";
+      unlockState();
+      return true;
+    }
+
+    Preferences p;
+    if (!p.begin(OTA_PREF_NAMESPACE, false)) {
+      lockState();
+      lastError = "无法打开 OTA 配置存储。";
+      unlockState();
+      return false;
+    }
+    p.putString(OTA_PREF_SELECTED_CHANNEL, channel);
+    p.end();
+
+    selectedChannelName = channel;
+    lockState();
+    clearLatestState();
+    lastError = "";
+    state = State::Idle;
+    lastCheckAt = 0;
+    resetProgressLocked();
+    unlockState();
+    Serial.printf("OTA selected channel changed: %s\n", selectedChannelName.c_str());
+    return true;
+  }
+  #if 0
   if (channel != "stable" && channel != "dev") {
     lastError = "不支持的 OTA 渠道：" + channel;
     return false;
   }
+
+  lockState();
+  updateProgressLocked("正在完成升级", 99, written, static_cast<size_t>(contentLength));
+  unlockState();
 
   Preferences p;
   if (!p.begin(OTA_PREF_NAMESPACE, false)) {
@@ -172,21 +341,57 @@ bool OtaManager::setSelectedChannel(const String& channel) {
   lastCheckAt = 0;
   Serial.printf("OTA selected channel changed: %s\n", selectedChannelName.c_str());
   return true;
+  #endif
 }
 
 String OtaManager::latestVersion() const {
+  {
+    lockState();
+    const String value = latest.version;
+    unlockState();
+    return value;
+  }
   return latest.version;
 }
 
 uint32_t OtaManager::latestBuild() const {
+  {
+    lockState();
+    const uint32_t value = latest.buildNumber;
+    unlockState();
+    return value;
+  }
   return latest.buildNumber;
 }
 
 String OtaManager::latestChannel() const {
+  {
+    lockState();
+    const String value = latest.channel;
+    unlockState();
+    return value;
+  }
   return latest.channel;
 }
 
 String OtaManager::latestBuildInfo() const {
+  {
+    lockState();
+    const OtaManifest manifestCopy = latest;
+    unlockState();
+    if (manifestCopy.version.isEmpty()) {
+      return "未检查";
+    }
+    String info = manifestCopy.channel + " " + manifestCopy.version + " build " +
+                  String(manifestCopy.buildNumber);
+    if (!manifestCopy.gitCommit.isEmpty()) {
+      info += " " + manifestCopy.gitCommit;
+    }
+    if (!manifestCopy.buildTime.isEmpty()) {
+      info += " " + manifestCopy.buildTime;
+    }
+    return info;
+  }
   if (latest.version.isEmpty()) {
     return "未检查";
   }
@@ -201,6 +406,12 @@ String OtaManager::latestBuildInfo() const {
 }
 
 String OtaManager::releaseNotes() const {
+  {
+    lockState();
+    const String value = latest.releaseNotes;
+    unlockState();
+    return value;
+  }
   return latest.releaseNotes;
 }
 
@@ -209,10 +420,89 @@ String OtaManager::manifestUrl() const {
 }
 
 String OtaManager::firmwareUrl() const {
+  {
+    lockState();
+    const OtaManifest manifestCopy = latest;
+    unlockState();
+    return resolveFirmwareUrl(manifestCopy);
+  }
   return resolveFirmwareUrl(latest);
 }
 
+uint8_t OtaManager::progressPercent() const {
+  lockState();
+  const uint8_t value = progressPercentValue;
+  unlockState();
+  return value;
+}
+
+String OtaManager::progressText() const {
+  lockState();
+  const String status = progressStatus;
+  const size_t currentBytes = progressCurrentBytes;
+  const size_t totalBytes = progressTotalBytes;
+  const uint8_t percent = progressPercentValue;
+  const bool rebooting = rebootPending;
+  unlockState();
+
+  if (status.isEmpty()) {
+    return "未开始";
+  }
+  if (totalBytes == 0 || rebooting) {
+    return status;
+  }
+  const size_t currentKb = currentBytes / 1024;
+  const size_t totalKb = totalBytes / 1024;
+  return status + " (" + String(percent) + "%, " + String(currentKb) + "/" + String(totalKb) +
+         " KB)";
+}
+
 String OtaManager::statusJson() const {
+  {
+    lockState();
+    const OtaManifest manifestCopy = latest;
+    const State currentState = state;
+    const String errorCopy = lastError;
+    const size_t currentBytes = progressCurrentBytes;
+    const size_t totalBytes = progressTotalBytes;
+    const uint8_t percent = progressPercentValue;
+    const bool rebooting = rebootPending;
+    unlockState();
+
+    String json;
+    json.reserve(1180);
+    json += "{";
+    json += "\"currentVersion\":\"" + jsonEscape(currentVersion()) + "\"";
+    json += ",\"currentBuild\":" + String(currentBuild());
+    json += ",\"currentChannel\":\"" + jsonEscape(currentChannel()) + "\"";
+    json += ",\"selectedChannel\":\"" + jsonEscape(selectedChannel()) + "\"";
+    json += ",\"latestVersion\":\"" + jsonEscape(manifestCopy.version) + "\"";
+    json += ",\"latestBuild\":" + String(manifestCopy.buildNumber);
+    json += ",\"latestChannel\":\"" + jsonEscape(manifestCopy.channel) + "\"";
+    json += ",\"latestBuildInfo\":\"" + jsonEscape(latestBuildInfo()) + "\"";
+    json += ",\"releaseNotes\":\"" + jsonEscape(manifestCopy.releaseNotes) + "\"";
+    json += ",\"updateAvailable\":";
+    json += (currentState == State::UpdateAvailable && isManifestNewer(manifestCopy)) ? "true"
+                                                                                      : "false";
+    json += ",\"busy\":";
+    json += (currentState == State::Checking || currentState == State::Upgrading) ? "true"
+                                                                                  : "false";
+    json += ",\"status\":\"" + jsonEscape(stateName()) + "\"";
+    json += ",\"lastError\":\"" + jsonEscape(errorCopy) + "\"";
+    json += ",\"progressPercent\":" + String(percent);
+    json += ",\"progressCurrentBytes\":" + String(static_cast<unsigned long>(currentBytes));
+    json += ",\"progressTotalBytes\":" + String(static_cast<unsigned long>(totalBytes));
+    json += ",\"progressText\":\"" + jsonEscape(progressText()) + "\"";
+    json += ",\"rebootPending\":";
+    json += rebooting ? "true" : "false";
+    json += ",\"manifestUrl\":\"" + jsonEscape(manifestUrl()) + "\"";
+    json += ",\"firmwareUrl\":\"" + jsonEscape(resolveFirmwareUrl(manifestCopy)) + "\"";
+    json += ",\"devBootAttempts\":" + String(devBootAttempts);
+    json += ",\"healthy\":";
+    json += healthyMarked ? "true" : "false";
+    json += "}";
+    return json;
+  }
   String json;
   json.reserve(960);
   json += "{";
@@ -313,6 +603,11 @@ bool OtaManager::isManifestNewer(const OtaManifest& manifest) const {
 }
 
 bool OtaManager::installManifest(const OtaManifest& manifest, String& error) {
+  {
+    ensureStateMutex();
+    error = "";
+    return startInstallTask(manifest, error);
+  }
   state = State::Upgrading;
   error = "";
   Serial.printf("OTA install start: target_channel=%s target_version=%s target_build=%lu\n",
@@ -330,6 +625,9 @@ bool OtaManager::installManifest(const OtaManifest& manifest, String& error) {
 
 bool OtaManager::downloadAndInstall(const OtaManifest& manifest, String& error) {
   String url = resolveFirmwareUrl(manifest);
+  lockState();
+  updateProgressLocked("正在连接固件服务器", 1, 0, manifest.size);
+  unlockState();
   if (url.isEmpty()) {
     error = "firmware_url 为空";
     return false;
@@ -373,6 +671,11 @@ bool OtaManager::downloadAndInstall(const OtaManifest& manifest, String& error) 
   uint8_t buffer[1024];
   size_t written = 0;
   unsigned long lastDataAt = millis();
+  unsigned long lastProgressAt = 0;
+
+  lockState();
+  updateProgressLocked("正在下载并写入固件", 1, 0, static_cast<size_t>(contentLength));
+  unlockState();
 
   while (http.connected() && written < static_cast<size_t>(contentLength)) {
     const size_t available = stream->available();
@@ -404,11 +707,33 @@ bool OtaManager::downloadAndInstall(const OtaManifest& manifest, String& error) 
       return false;
     }
     written += bytesWritten;
+    const unsigned long now = millis();
+    if (contentLength > 0 &&
+        (now - lastProgressAt >= 200 || written == static_cast<size_t>(contentLength))) {
+      uint32_t percentValue =
+          (static_cast<uint32_t>(written) * OTA_PROGRESS_DOWNLOAD_MAX) /
+          static_cast<uint32_t>(contentLength);
+      if (percentValue > OTA_PROGRESS_DOWNLOAD_MAX) {
+        percentValue = OTA_PROGRESS_DOWNLOAD_MAX;
+      }
+      const uint8_t percent = static_cast<uint8_t>(percentValue);
+      lockState();
+      updateProgressLocked("正在下载并写入固件",
+                           percent,
+                           written,
+                           static_cast<size_t>(contentLength));
+      unlockState();
+      lastProgressAt = now;
+    }
   }
 
   uint8_t digest[32];
   mbedtls_sha256_finish(&shaCtx, digest);
   mbedtls_sha256_free(&shaCtx);
+
+  lockState();
+  updateProgressLocked("正在校验固件", 97, written, static_cast<size_t>(contentLength));
+  unlockState();
 
   String actualSha;
   actualSha.reserve(64);
@@ -440,10 +765,16 @@ bool OtaManager::downloadAndInstall(const OtaManifest& manifest, String& error) 
     p.end();
   }
 
+  lockState();
+  updateProgressLocked("正在完成升级", 99, written, static_cast<size_t>(contentLength));
+  unlockState();
   Serial.printf("OTA install complete: channel=%s version=%s build=%lu, rebooting\n",
                 manifest.channel.c_str(),
                 manifest.version.c_str(),
                 static_cast<unsigned long>(manifest.buildNumber));
+  lockState();
+  updateProgressLocked("升级完成，正在重启", 100, written, static_cast<size_t>(contentLength), true);
+  unlockState();
   delay(300);
   ESP.restart();
   return true;
@@ -598,6 +929,26 @@ String OtaManager::resolveFirmwareUrl(const OtaManifest& manifest) const {
 }
 
 String OtaManager::stateName() const {
+  {
+    lockState();
+    const State currentState = state;
+    unlockState();
+    switch (currentState) {
+      case State::Idle:
+        return "空闲";
+      case State::Checking:
+        return "检查中";
+      case State::UpdateAvailable:
+        return "发现更新";
+      case State::UpToDate:
+        return "已是最新";
+      case State::Upgrading:
+        return "升级中";
+      case State::Error:
+        return "错误";
+    }
+    return "未知";
+  }
   switch (state) {
     case State::Idle:
       return "空闲";
@@ -666,4 +1017,124 @@ int OtaManager::compareVersions(const String& lhs, const String& rhs) {
     rightStart = rightDot + 1;
   }
   return 0;
+}
+
+void OtaManager::ensureStateMutex() {
+  if (stateMutex == nullptr) {
+    stateMutex = xSemaphoreCreateMutex();
+  }
+}
+
+void OtaManager::lockState() const {
+  if (stateMutex != nullptr) {
+    xSemaphoreTake(stateMutex, portMAX_DELAY);
+  }
+}
+
+void OtaManager::unlockState() const {
+  if (stateMutex != nullptr) {
+    xSemaphoreGive(stateMutex);
+  }
+}
+
+void OtaManager::resetProgressLocked() {
+  progressStatus = "";
+  progressCurrentBytes = 0;
+  progressTotalBytes = 0;
+  progressPercentValue = 0;
+  rebootPending = false;
+}
+
+void OtaManager::updateProgressLocked(const String& status,
+                                      uint8_t percent,
+                                      size_t currentBytes,
+                                      size_t totalBytes,
+                                      bool rebooting) {
+  progressStatus = status;
+  progressPercentValue = percent;
+  progressCurrentBytes = currentBytes;
+  progressTotalBytes = totalBytes;
+  rebootPending = rebooting;
+}
+
+bool OtaManager::startInstallTask(const OtaManifest& manifest, String& error) {
+  ensureStateMutex();
+  lockState();
+  if (upgradeTaskRunning || state == State::Upgrading) {
+    lastError = "OTA 正忙，请稍后再试。";
+    error = lastError;
+    unlockState();
+    return false;
+  }
+
+  state = State::Upgrading;
+  lastError = "";
+  resetProgressLocked();
+  updateProgressLocked("准备开始 OTA 升级", 0, 0, manifest.size);
+  latest = manifest;
+  upgradeTaskRunning = true;
+  unlockState();
+
+  OtaTaskContext* context = new OtaTaskContext{this, manifest};
+  if (context == nullptr) {
+    lockState();
+    upgradeTaskRunning = false;
+    state = State::Error;
+    lastError = "内存不足，无法启动 OTA 任务。";
+    error = lastError;
+    unlockState();
+    return false;
+  }
+
+  const BaseType_t taskCreated = xTaskCreate(
+      OtaManager::upgradeTaskEntry, "ota_upgrade", OTA_TASK_STACK_SIZE, context, OTA_TASK_PRIORITY, nullptr);
+  if (taskCreated != pdPASS) {
+    delete context;
+    lockState();
+    upgradeTaskRunning = false;
+    state = State::Error;
+    lastError = "无法启动 OTA 后台任务。";
+    error = lastError;
+    unlockState();
+    return false;
+  }
+
+  Serial.printf("OTA install queued: target_channel=%s target_version=%s target_build=%lu\n",
+                manifest.channel.c_str(),
+                manifest.version.c_str(),
+                static_cast<unsigned long>(manifest.buildNumber));
+  return true;
+}
+
+void OtaManager::upgradeTaskEntry(void* parameter) {
+  OtaTaskContext* context = static_cast<OtaTaskContext*>(parameter);
+  if (context != nullptr && context->manager != nullptr) {
+    context->manager->runUpgradeTask(context->manifest);
+  }
+  delete context;
+  vTaskDelete(nullptr);
+}
+
+void OtaManager::runUpgradeTask(OtaManifest manifest) {
+  String error;
+  Serial.printf("OTA install start: target_channel=%s target_version=%s target_build=%lu\n",
+                manifest.channel.c_str(),
+                manifest.version.c_str(),
+                static_cast<unsigned long>(manifest.buildNumber));
+
+  if (!downloadAndInstall(manifest, error)) {
+    lockState();
+    lastError = error;
+    state = State::Error;
+    progressStatus = "升级失败";
+    rebootPending = false;
+    upgradeTaskRunning = false;
+    unlockState();
+    Serial.printf("OTA install failed: %s\n", error.c_str());
+    return;
+  }
+
+  lockState();
+  upgradeTaskRunning = false;
+  unlockState();
 }

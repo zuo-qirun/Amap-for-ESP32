@@ -325,6 +325,7 @@ void NetworkManager::configureRoutes() {
   webServer.on("/clear", HTTP_POST, [this]() { handleClear(); });
   webServer.on("/ota/check", HTTP_POST, [this]() { handleOtaCheck(); });
   webServer.on("/ota/upgrade", HTTP_POST, [this]() { handleOtaUpgrade(); });
+  webServer.on("/ota/upgrade", HTTP_GET, [this]() { redirectToRoot(); });
   webServer.on("/status.json", HTTP_GET, [this]() { handleStatusJson(); });
   webServer.on("/generate_204", HTTP_GET, [this]() { redirectToPortal(); });
   webServer.on("/fwlink", HTTP_GET, [this]() { redirectToPortal(); });
@@ -400,6 +401,32 @@ void NetworkManager::handleOtaCheck() {
 }
 
 void NetworkManager::handleOtaUpgrade() {
+  {
+    String redirectMessage;
+    if (!otaManager) {
+      redirectMessage = "OTA 管理器尚未初始化。";
+    } else if (!isConnected()) {
+      redirectMessage = "请先连接 Wi-Fi 再升级。";
+    } else if (!applyOtaChannelSelection(redirectMessage)) {
+      redirectMessage = "升级失败：" + redirectMessage;
+    } else if (otaManager->isBusy()) {
+      portalMessage = "OTA 正在进行中，可在下方查看进度。";
+      redirectToRoot();
+      return;
+    } else if (!otaManager->updateAvailable()) {
+      redirectMessage = "当前没有可安装的更新，请先检查更新。";
+    } else if (otaManager->upgradeNow()) {
+      portalMessage = "开始 OTA 升级，可在下方查看进度；完成后设备会自动重启。";
+      redirectToRoot();
+      return;
+    } else {
+      redirectMessage = "升级失败：" + otaManager->lastErrorText();
+    }
+
+    webServer.sendHeader("Cache-Control", "no-store");
+    webServer.send(200, "text/html; charset=utf-8", buildStatusPage(redirectMessage));
+    return;
+  }
   String message;
   if (!otaManager) {
     message = "OTA 管理器尚未初始化。";
@@ -455,6 +482,12 @@ void NetworkManager::handleNotFound() {
   webServer.send(404, "text/plain; charset=utf-8", "未找到页面");
 }
 
+void NetworkManager::redirectToRoot() {
+  webServer.sendHeader("Cache-Control", "no-store");
+  webServer.sendHeader("Location", "/", true);
+  webServer.send(303, "text/plain; charset=utf-8", "正在返回首页...");
+}
+
 void NetworkManager::redirectToPortal() {
   webServer.sendHeader("Location", configPortalUrl(), true);
   webServer.send(302, "text/plain; charset=utf-8", "正在跳转到配网页面");
@@ -475,7 +508,7 @@ bool NetworkManager::shouldRedirectToPortal() {
 
 String NetworkManager::buildStatusPage(const String& message) const {
   String page;
-  page.reserve(7000);
+  page.reserve(9200);
   page += F("<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">");
   page += F("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
   page += F("<title>AMap ESP32 配置</title><style>");
@@ -487,7 +520,8 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += F(".ok{color:#087443}.bad{color:#b42318}.msg{background:#e8f1ff;border-color:#b8d3ff}.err{background:#fff1f0;border-color:#ffccc7}");
   page += F("label{display:block;font-weight:650;margin:12px 0 6px}input,select{width:100%;box-sizing:border-box;border:1px solid #c8d2df;border-radius:6px;padding:11px;font-size:16px;background:#fff}");
   page += F("button{border:0;border-radius:6px;background:#1769e0;color:white;font-weight:700;padding:11px 14px;font-size:15px;margin-top:14px;cursor:pointer}");
-  page += F("button.secondary{background:#687385}.hint{font-size:13px;color:#637083;line-height:1.5}</style></head><body><main>");
+  page += F("button:disabled{background:#9aa5b1;cursor:not-allowed}button.secondary{background:#687385}.hint{font-size:13px;color:#637083;line-height:1.5}");
+  page += F(".progress{margin-top:4px}.progress-track{height:10px;background:#e3eaf5;border-radius:999px;overflow:hidden}.progress-bar{height:100%;width:0;background:#1769e0;transition:width .2s ease}.progress-meta{display:flex;justify-content:space-between;gap:12px;margin-top:8px;font-size:13px;color:#4d5b6c}</style></head><body><main>");
   page += F("<h1>AMap ESP32 配置</h1><p class=\"sub\">网络状态、配网页面与 OTA 工具。</p>");
 
   const String visibleMessage = message.isEmpty() ? portalMessage : message;
@@ -552,7 +586,13 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += otaManager ? htmlEscape(otaManager->releaseNotes()) : String("");
   page += F("</div><div class=\"k\">错误信息</div><div id=\"otaError\" class=\"v bad\">");
   page += otaManager ? htmlEscape(otaManager->lastErrorText()) : String("");
-  page += F("</div></div>");
+  page += F("</div><div class=\"k\">升级进度</div><div class=\"v\"><div class=\"progress\"><div class=\"progress-track\"><div id=\"otaProgressBar\" class=\"progress-bar\" style=\"width:");
+  page += otaManager ? String(otaManager->progressPercent()) : String("0");
+  page += F("%\"></div></div><div class=\"progress-meta\"><span id=\"otaProgressText\">");
+  page += otaManager ? htmlEscape(otaManager->progressText()) : String("未开始");
+  page += F("</span><span id=\"otaProgressPercent\">");
+  page += otaManager ? String(otaManager->progressPercent()) + "%" : String("0%");
+  page += F("</span></div></div></div></div>");
   page += F("<form method=\"post\" action=\"/ota/check\" style=\"display:inline\">");
   page += F("<label for=\"otaChannelSelect\">更新渠道</label><select id=\"otaChannelSelect\" name=\"channel\" style=\"width:100%;box-sizing:border-box;border:1px solid #c8d2df;border-radius:6px;padding:11px;font-size:16px;background:#fff\">");
   page += F("<option value=\"stable\"");
@@ -573,8 +613,9 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += F("t('currentSsid',s.ssid||'未配置');t('credentialSource',s.source||'none');t('staIp',s.staIp||'未连接');t('udpPort',String(s.udpPort||''));");
   page += F("t('portalSsid',s.portalActive?s.portalSsid:'未启用');t('portalUrl',s.portalActive?s.portalUrl:(s.staIp?('http://'+s.staIp+'/'):'未连接'));");
   page += F("if(s.ota){t('otaCurrent',s.ota.currentVersion+' build '+s.ota.currentBuild);t('otaChannel',s.ota.currentChannel);t('otaSelectedChannel',s.ota.selectedChannel||'');t('otaLatest',s.ota.latestBuildInfo||'未检查');t('otaStatus',s.ota.status);t('otaNotes',s.ota.releaseNotes||'');t('otaError',s.ota.lastError||'');var c=e('otaChannelSelect');if(c&&s.ota.selectedChannel)c.value=s.ota.selectedChannel;var h=document.querySelector('form[action=\"/ota/upgrade\"] input[name=\"channel\"]');if(h&&s.ota.selectedChannel)h.value=s.ota.selectedChannel}");
+  page += F("if(s.ota){var pb=e('otaProgressBar');if(pb)pb.style.width=String(s.ota.progressPercent||0)+'%';t('otaProgressText',s.ota.progressText||'未开始');t('otaProgressPercent',String(s.ota.progressPercent||0)+'%');var busy=!!s.ota.busy;var cb=document.querySelector('form[action=\"/ota/check\"] button');if(cb)cb.disabled=busy;var ub=document.querySelector('form[action=\"/ota/upgrade\"] button');if(ub)ub.disabled=busy;}");
   page += F("var p=e('errorPanel');var l=e('lastError');if(p&&l){l.textContent=s.lastError||'';p.style.display=s.lastError?'':'none'}}).catch(function(){})}");
-  page += F("setInterval(poll,3000);setTimeout(poll,1000)})();</script>");
+  page += F("setInterval(poll,800);setTimeout(poll,200)})();</script>");
   page += F("</main></body></html>");
   return page;
 }

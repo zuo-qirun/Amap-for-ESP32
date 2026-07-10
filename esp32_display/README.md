@@ -85,9 +85,11 @@ CI 会覆盖这些宏。ESP32 通过 `Config.h` 中的 `OTA_BASE_URL` 和 `OTA_C
 1. 使用 PlatformIO 构建 `esp32_display/` 的 `esp32-s3-devkitm-1` 环境。
 2. 生成 `dist/{channel}/firmware.bin`。
 3. 生成 `firmware.sha256`。
-4. 生成 `manifest.json`。
+4. 生成 `manifest.json` 和 `CHANGELOG.md`。
 5. 上传 GitHub Actions artifact。
 6. 发布滚动 GitHub Release：`ota-dev-latest` 或 `ota-stable-latest`。
+
+默认的 `version` 与 `build_number` 使用提交历史计数，因此同一提交从 `dev` 和 `main`/`master` 构建时始终一致；如有发布需求，也可以通过 `OTA_VERSION` 与 `OTA_BUILD_NUMBER` 覆盖。
 
 manifest 示例：
 
@@ -103,11 +105,12 @@ manifest 示例：
   "sha256": "64 hex chars",
   "size": 1183381,
   "min_supported_version": "0.1.0",
-  "release_notes": "stable build 0.1.42"
+  "release_notes": "stable build 0.1.42",
+  "changelog_url": "CHANGELOG.md"
 }
 ```
 
-`firmware_url` 可以是绝对 URL，也可以是 `firmware.bin` 这种相对路径。相对路径会解析为当前渠道目录下的固件。
+`firmware_url` 与 `changelog_url` 都可以是绝对 URL，也可以是 `firmware.bin`、`CHANGELOG.md` 这类相对路径。相对路径会解析为当前渠道目录。设备检查更新时会读取 `CHANGELOG.md` 并显示在配置页面；无法读取时仍会显示 `release_notes`，且不影响 OTA 升级。
 
 ### 国内服务器同步
 
@@ -146,9 +149,11 @@ GITHUB_TOKEN=<github-token> node index.mjs \
 /www/wwwroot/ota.zuoqirun.top/ota/dev/manifest.json
 /www/wwwroot/ota.zuoqirun.top/ota/dev/firmware.bin
 /www/wwwroot/ota.zuoqirun.top/ota/dev/firmware.sha256
+/www/wwwroot/ota.zuoqirun.top/ota/dev/CHANGELOG.md
 /www/wwwroot/ota.zuoqirun.top/ota/stable/manifest.json
 /www/wwwroot/ota.zuoqirun.top/ota/stable/firmware.bin
 /www/wwwroot/ota.zuoqirun.top/ota/stable/firmware.sha256
+/www/wwwroot/ota.zuoqirun.top/ota/stable/CHANGELOG.md
 ```
 
 ESP32 只需要访问国内服务器，例如：

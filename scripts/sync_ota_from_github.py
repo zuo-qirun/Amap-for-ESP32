@@ -20,6 +20,7 @@ from urllib.request import Request, urlopen
 
 
 REQUIRED = {"firmware.bin", "firmware.sha256", "manifest.json"}
+OPTIONAL = {"CHANGELOG.md"}
 
 
 def github_get(url: str, token: Optional[str] = None) -> bytes:
@@ -48,6 +49,10 @@ def sync_release(repo: str, channel: str, temp_dir: Path, token: Optional[str]) 
         raise SystemExit(f"release missing assets: {', '.join(sorted(missing))}")
     for name in REQUIRED:
         download_file(assets[name]["browser_download_url"], temp_dir / name, token)
+    for name in OPTIONAL:
+        asset = assets.get(name)
+        if asset:
+            download_file(asset["browser_download_url"], temp_dir / name, token)
 
 
 def sync_artifact(repo: str, channel: str, temp_dir: Path, token: Optional[str]) -> None:
@@ -82,8 +87,15 @@ def publish(temp_dir: Path, target_dir: Path) -> None:
 
     for name in REQUIRED:
         shutil.copy2(temp_dir / name, staging / name)
+    for name in OPTIONAL:
+        source = temp_dir / name
+        if source.exists():
+            shutil.copy2(source, staging / name)
 
-    for name in REQUIRED:
+    for name in [*REQUIRED, *OPTIONAL]:
+        source = staging / name
+        if not source.exists():
+            continue
         shutil.move(str(staging / name), str(target_dir / name))
     shutil.rmtree(staging)
 

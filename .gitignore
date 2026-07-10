@@ -33,3 +33,5 @@ manifest.json
 tmp/
 temp/
 __pycache__/
+ota_sync/node_modules/
+ota_sync/.env

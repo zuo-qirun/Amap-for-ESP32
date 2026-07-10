@@ -20,6 +20,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set OTA metadata
         id: meta
@@ -33,11 +35,35 @@ jobs:
           fi
 
           short_sha="$(git rev-parse --short=12 HEAD)"
-          version="${OTA_VERSION:-0.1.${GITHUB_RUN_NUMBER}}"
-          build_number="${GITHUB_RUN_NUMBER}"
+          commit_count="$(git rev-list --count HEAD)"
+          version="${OTA_VERSION:-0.1.${commit_count}}"
+          build_number="${OTA_BUILD_NUMBER:-${commit_count}}"
           firmware_url="${OTA_FIRMWARE_URL:-firmware.bin}"
           min_supported="${OTA_MIN_SUPPORTED_VERSION:-}"
-          release_notes="${OTA_RELEASE_NOTES:-${channel} build ${version} (${short_sha})}"
+          tag_name="ota-${channel}-latest"
+          range_args=()
+          if git rev-parse -q --verify "refs/tags/${tag_name}" >/dev/null; then
+            previous_commit="$(git rev-list -n 1 "refs/tags/${tag_name}")"
+            if git merge-base --is-ancestor "${previous_commit}" HEAD; then
+              range_args+=("${previous_commit}..HEAD")
+            fi
+          fi
+
+          notes_file="$(mktemp)"
+          if [[ -n "${OTA_RELEASE_NOTES:-}" ]]; then
+            printf "%s\n" "${OTA_RELEASE_NOTES}" > "${notes_file}"
+          else
+            mapfile -t commit_subjects < <(
+              git log "${range_args[@]}" --no-merges --pretty=format:%s -n 8
+            )
+            if [[ "${#commit_subjects[@]}" -eq 0 ]]; then
+              printf -- "- %s build %s (%s)\n" "${channel}" "${version}" "${short_sha}" > "${notes_file}"
+            else
+              for subject in "${commit_subjects[@]}"; do
+                printf -- "- %s\n" "${subject}" >> "${notes_file}"
+              done
+            fi
+          fi
 
           {
             echo "channel=${channel}"
@@ -46,7 +72,9 @@ jobs:
             echo "short_sha=${short_sha}"
             echo "firmware_url=${firmware_url}"
             echo "min_supported=${min_supported}"
-            echo "release_notes=${release_notes}"
+            echo "release_notes<<EOF"
+            cat "${notes_file}"
+            echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
@@ -79,7 +107,8 @@ jobs:
             --git-commit "${GITHUB_SHA}" \
             --firmware-url "${{ steps.meta.outputs.firmware_url }}" \
             --min-supported-version "${{ steps.meta.outputs.min_supported }}" \
-            --release-notes "${{ steps.meta.outputs.release_notes }}"
+            --release-notes "${{ steps.meta.outputs.release_notes }}" \
+            --changelog-url "CHANGELOG.md"
 
       - name: Upload OTA artifact
         uses: actions/upload-artifact@v4

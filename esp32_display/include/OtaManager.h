@@ -20,6 +20,7 @@ struct OtaManifest {
   size_t size = 0;
   String minSupportedVersion;
   String releaseNotes;
+  String changelogUrl;
 };
 
 class OtaManager {
@@ -45,6 +46,7 @@ public:
   String latestChannel() const;
   String latestBuildInfo() const;
   String releaseNotes() const;
+  String changelogUrl() const;
   String manifestUrl() const;
   String firmwareUrl() const;
   uint8_t progressPercent() const;
@@ -81,6 +83,7 @@ private:
 
   String channelManifestUrl(const String& channel) const;
   bool fetchManifest(const String& channel, OtaManifest& out, String& error);
+  bool fetchChangelog(const OtaManifest& manifest, String& out);
   bool parseManifest(const String& payload, OtaManifest& out, String& error) const;
   bool isManifestNewer(const OtaManifest& manifest) const;
   bool shouldAllowStableDowngrade(const OtaManifest& manifest) const;
@@ -111,6 +114,7 @@ private:
   void noteBoot();
   bool shouldAttemptDevFallback(bool networkConnected, bool webReady, bool oledReady);
   String resolveFirmwareUrl(const OtaManifest& manifest) const;
+  String resolveChangelogUrl(const OtaManifest& manifest) const;
   String stateName() const;
   String jsonEscape(String value) const;
   String normalizeBaseUrl() const;

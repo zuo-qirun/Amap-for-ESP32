@@ -19,6 +19,7 @@ const char* OTA_PREF_BUILD = "build";
 const char* OTA_PREF_CHANNEL = "channel";
 const char* OTA_PREF_SELECTED_CHANNEL = "selected_channel";
 const uint8_t OTA_HTTP_REDIRECT_LIMIT = 4;
+const size_t OTA_CHANGELOG_MAX_BYTES = 4096;
 const uint32_t OTA_PROGRESS_DOWNLOAD_MAX = 96;
 const uint32_t OTA_TASK_STACK_SIZE = 10240;
 const UBaseType_t OTA_TASK_PRIORITY = 1;
@@ -415,6 +416,16 @@ String OtaManager::releaseNotes() const {
   return latest.releaseNotes;
 }
 
+String OtaManager::changelogUrl() const {
+  {
+    lockState();
+    const OtaManifest manifestCopy = latest;
+    unlockState();
+    return resolveChangelogUrl(manifestCopy);
+  }
+  return resolveChangelogUrl(latest);
+}
+
 String OtaManager::manifestUrl() const {
   return channelManifestUrl(selectedChannel());
 }
@@ -481,6 +492,8 @@ String OtaManager::statusJson() const {
     json += ",\"latestChannel\":\"" + jsonEscape(manifestCopy.channel) + "\"";
     json += ",\"latestBuildInfo\":\"" + jsonEscape(latestBuildInfo()) + "\"";
     json += ",\"releaseNotes\":\"" + jsonEscape(manifestCopy.releaseNotes) + "\"";
+    json += ",\"changelog\":\"" + jsonEscape(manifestCopy.releaseNotes) + "\"";
+    json += ",\"changelogUrl\":\"" + jsonEscape(resolveChangelogUrl(manifestCopy)) + "\"";
     json += ",\"updateAvailable\":";
     json += (currentState == State::UpdateAvailable && isManifestNewer(manifestCopy)) ? "true"
                                                                                       : "false";
@@ -515,6 +528,8 @@ String OtaManager::statusJson() const {
   json += ",\"latestChannel\":\"" + jsonEscape(latestChannel()) + "\"";
   json += ",\"latestBuildInfo\":\"" + jsonEscape(latestBuildInfo()) + "\"";
   json += ",\"releaseNotes\":\"" + jsonEscape(releaseNotes()) + "\"";
+  json += ",\"changelog\":\"" + jsonEscape(releaseNotes()) + "\"";
+  json += ",\"changelogUrl\":\"" + jsonEscape(changelogUrl()) + "\"";
   json += ",\"updateAvailable\":";
   json += updateAvailable() ? "true" : "false";
   json += ",\"busy\":";
@@ -550,7 +565,51 @@ bool OtaManager::fetchManifest(const String& channel, OtaManifest& out, String& 
   }
   const String payload = http.getString();
   http.end();
-  return parseManifest(payload, out, error);
+  if (!parseManifest(payload, out, error)) {
+    return false;
+  }
+
+  // Match the companion app's behaviour: a standalone changelog improves the
+  // update details when available, but must never make OTA checking fail.
+  String changelog;
+  if (fetchChangelog(out, changelog)) {
+    out.releaseNotes = changelog;
+  }
+  return true;
+}
+
+bool OtaManager::fetchChangelog(const OtaManifest& manifest, String& out) {
+  const String url = resolveChangelogUrl(manifest);
+  if (url.isEmpty()) {
+    return false;
+  }
+
+  WiFiClient plainClient;
+  WiFiClientSecure secureClient;
+  HTTPClient http;
+  int code = 0;
+  String ignoredError;
+  String resolvedUrl = url;
+  if (!openHttpGet(resolvedUrl, http, plainClient, secureClient, code, ignoredError) ||
+      code != HTTP_CODE_OK) {
+    http.end();
+    return false;
+  }
+
+  const int contentLength = http.getSize();
+  if (contentLength > static_cast<int>(OTA_CHANGELOG_MAX_BYTES)) {
+    http.end();
+    return false;
+  }
+
+  out = http.getString();
+  http.end();
+  out.trim();
+  if (out.length() > OTA_CHANGELOG_MAX_BYTES) {
+    out = "";
+    return false;
+  }
+  return !out.isEmpty();
 }
 
 bool OtaManager::parseManifest(const String& payload, OtaManifest& out, String& error) const {
@@ -573,6 +632,7 @@ bool OtaManager::parseManifest(const String& payload, OtaManifest& out, String& 
   out.size = doc["size"] | 0;
   out.minSupportedVersion = doc["min_supported_version"] | "";
   out.releaseNotes = doc["release_notes"] | "";
+  out.changelogUrl = doc["changelog_url"] | "";
 
   out.sha256.toLowerCase();
   if (out.channel.isEmpty() || out.version.isEmpty() || out.firmwareUrl.isEmpty() ||
@@ -933,6 +993,20 @@ String OtaManager::resolveFirmwareUrl(const OtaManifest& manifest) const {
   }
   const String channel = manifest.channel.isEmpty() ? selectedChannel() : manifest.channel;
   return normalizeBaseUrl() + "/" + channel + "/" + manifest.firmwareUrl;
+}
+
+String OtaManager::resolveChangelogUrl(const OtaManifest& manifest) const {
+  if (manifest.changelogUrl.isEmpty()) {
+    return "";
+  }
+  if (manifest.changelogUrl.startsWith("http://") || manifest.changelogUrl.startsWith("https://")) {
+    return manifest.changelogUrl;
+  }
+  if (manifest.changelogUrl.startsWith("/")) {
+    return normalizeBaseUrl() + manifest.changelogUrl;
+  }
+  const String channel = manifest.channel.isEmpty() ? selectedChannel() : manifest.channel;
+  return normalizeBaseUrl() + "/" + channel + "/" + manifest.changelogUrl;
 }
 
 String OtaManager::stateName() const {

@@ -520,7 +520,7 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += F(".ok{color:#087443}.bad{color:#b42318}.msg{background:#e8f1ff;border-color:#b8d3ff}.err{background:#fff1f0;border-color:#ffccc7}");
   page += F("label{display:block;font-weight:650;margin:12px 0 6px}input,select{width:100%;box-sizing:border-box;border:1px solid #c8d2df;border-radius:6px;padding:11px;font-size:16px;background:#fff}");
   page += F("button{border:0;border-radius:6px;background:#1769e0;color:white;font-weight:700;padding:11px 14px;font-size:15px;margin-top:14px;cursor:pointer}");
-  page += F("button:disabled{background:#9aa5b1;cursor:not-allowed}button.secondary{background:#687385}.hint{font-size:13px;color:#637083;line-height:1.5}");
+  page += F("button:disabled{background:#9aa5b1;cursor:not-allowed}button.secondary{background:#687385}.hint{font-size:13px;color:#637083;line-height:1.5}.notes{white-space:pre-wrap;font-weight:500;line-height:1.5}");
   page += F(".progress{margin-top:4px}.progress-track{height:10px;background:#e3eaf5;border-radius:999px;overflow:hidden}.progress-bar{height:100%;width:0;background:#1769e0;transition:width .2s ease}.progress-meta{display:flex;justify-content:space-between;gap:12px;margin-top:8px;font-size:13px;color:#4d5b6c}</style></head><body><main>");
   page += F("<h1>AMap ESP32 配置</h1><p class=\"sub\">网络状态、配网页面与 OTA 工具。</p>");
 
@@ -582,7 +582,7 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += otaManager ? htmlEscape(otaManager->latestBuildInfo()) : String("未检查");
   page += F("</div><div class=\"k\">OTA 状态</div><div id=\"otaStatus\" class=\"v\">");
   page += otaManager ? htmlEscape(otaManager->statusText()) : String("-");
-  page += F("</div><div class=\"k\">更新说明</div><div id=\"otaNotes\" class=\"v\">");
+  page += F("</div><div class=\"k\">更新日志</div><div id=\"otaNotes\" class=\"v notes\">");
   page += otaManager ? htmlEscape(otaManager->releaseNotes()) : String("");
   page += F("</div><div class=\"k\">错误信息</div><div id=\"otaError\" class=\"v bad\">");
   page += otaManager ? htmlEscape(otaManager->lastErrorText()) : String("");
@@ -612,7 +612,7 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += F("var w=e('wifiStatus');if(w){w.textContent=s.wifiStatus||'';w.className='v '+(s.connected?'ok':'bad')}");
   page += F("t('currentSsid',s.ssid||'未配置');t('credentialSource',s.source||'none');t('staIp',s.staIp||'未连接');t('udpPort',String(s.udpPort||''));");
   page += F("t('portalSsid',s.portalActive?s.portalSsid:'未启用');t('portalUrl',s.portalActive?s.portalUrl:(s.staIp?('http://'+s.staIp+'/'):'未连接'));");
-  page += F("if(s.ota){t('otaCurrent',s.ota.currentVersion+' build '+s.ota.currentBuild);t('otaChannel',s.ota.currentChannel);t('otaSelectedChannel',s.ota.selectedChannel||'');t('otaLatest',s.ota.latestBuildInfo||'未检查');t('otaStatus',s.ota.status);t('otaNotes',s.ota.releaseNotes||'');t('otaError',s.ota.lastError||'');var c=e('otaChannelSelect');if(c&&s.ota.selectedChannel)c.value=s.ota.selectedChannel;var h=document.querySelector('form[action=\"/ota/upgrade\"] input[name=\"channel\"]');if(h&&s.ota.selectedChannel)h.value=s.ota.selectedChannel}");
+  page += F("if(s.ota){t('otaCurrent',s.ota.currentVersion+' build '+s.ota.currentBuild);t('otaChannel',s.ota.currentChannel);t('otaSelectedChannel',s.ota.selectedChannel||'');t('otaLatest',s.ota.latestBuildInfo||'未检查');t('otaStatus',s.ota.status);t('otaNotes',s.ota.changelog||s.ota.releaseNotes||'');t('otaError',s.ota.lastError||'');var c=e('otaChannelSelect');if(c&&s.ota.selectedChannel)c.value=s.ota.selectedChannel;var h=document.querySelector('form[action=\"/ota/upgrade\"] input[name=\"channel\"]');if(h&&s.ota.selectedChannel)h.value=s.ota.selectedChannel}");
   page += F("if(s.ota){var pb=e('otaProgressBar');if(pb)pb.style.width=String(s.ota.progressPercent||0)+'%';t('otaProgressText',s.ota.progressText||'未开始');t('otaProgressPercent',String(s.ota.progressPercent||0)+'%');var busy=!!s.ota.busy;var cb=document.querySelector('form[action=\"/ota/check\"] button');if(cb)cb.disabled=busy;var ub=document.querySelector('form[action=\"/ota/upgrade\"] button');if(ub)ub.disabled=busy;}");
   page += F("var c2=e('otaChannelSelect');if(c2&&c2.dataset.dirty&&c2.dataset.pending){if(s.ota&&c2.dataset.pending===s.ota.selectedChannel){c2.dataset.dirty='';c2.dataset.pending=''}else{c2.value=c2.dataset.pending;sc()}}");
   page += F("var p=e('errorPanel');var l=e('lastError');if(p&&l){l.textContent=s.lastError||'';p.style.display=s.lastError?'':'none'}}).catch(function(){})}");

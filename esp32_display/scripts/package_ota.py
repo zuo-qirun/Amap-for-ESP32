@@ -28,6 +28,7 @@ def main() -> None:
     parser.add_argument("--firmware-url", default="firmware.bin")
     parser.add_argument("--min-supported-version", default="")
     parser.add_argument("--release-notes", default="")
+    parser.add_argument("--changelog-url", default="CHANGELOG.md")
     args = parser.parse_args()
 
     if not args.firmware.exists():
@@ -54,12 +55,33 @@ def main() -> None:
         "sha256": digest,
         "size": size,
         "release_notes": args.release_notes,
+        "changelog_url": args.changelog_url,
     }
     if args.min_supported_version:
         manifest["min_supported_version"] = args.min_supported_version
 
     (args.out_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    note_lines = [
+        line.rstrip()
+        for line in args.release_notes.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        if line.strip()
+    ]
+    if not note_lines:
+        note_lines = [f"- {args.channel} build {args.version} ({args.git_commit[:12]})"]
+
+    changelog_lines = [
+        "AMap ESP32 OTA Update Log",
+        f"{args.channel} {args.version} build {args.build_number}",
+        "",
+        *note_lines,
+        "",
+    ]
+    (args.out_dir / "CHANGELOG.md").write_text(
+        "\n".join(changelog_lines),
         encoding="utf-8",
     )
 

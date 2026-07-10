@@ -498,7 +498,10 @@ void OtaManager::loadSelectedChannel() {
   if (!p.begin(OTA_PREF_NAMESPACE, true)) {
     return;
   }
-  const String stored = p.getString(OTA_PREF_SELECTED_CHANNEL, selectedChannelName);
+  String stored = selectedChannelName;
+  if (p.isKey(OTA_PREF_SELECTED_CHANNEL)) {
+    stored = p.getString(OTA_PREF_SELECTED_CHANNEL, selectedChannelName);
+  }
   p.end();
   if (stored == "stable" || stored == "dev") {
     selectedChannelName = stored;

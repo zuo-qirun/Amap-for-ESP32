@@ -593,6 +593,9 @@ bool OtaManager::parseManifest(const String& payload, OtaManifest& out, String& 
 }
 
 bool OtaManager::isManifestNewer(const OtaManifest& manifest) const {
+  if (shouldAllowStableDowngrade(manifest)) {
+    return true;
+  }
   if (manifest.buildNumber > currentBuild()) {
     return true;
   }
@@ -600,6 +603,10 @@ bool OtaManager::isManifestNewer(const OtaManifest& manifest) const {
     return false;
   }
   return compareVersions(manifest.version, currentVersion()) > 0;
+}
+
+bool OtaManager::shouldAllowStableDowngrade(const OtaManifest& manifest) const {
+  return currentChannel() == "dev" && manifest.channel == "stable";
 }
 
 bool OtaManager::installManifest(const OtaManifest& manifest, String& error) {

@@ -83,6 +83,7 @@ private:
   bool fetchManifest(const String& channel, OtaManifest& out, String& error);
   bool parseManifest(const String& payload, OtaManifest& out, String& error) const;
   bool isManifestNewer(const OtaManifest& manifest) const;
+  bool shouldAllowStableDowngrade(const OtaManifest& manifest) const;
   bool installManifest(const OtaManifest& manifest, String& error);
   bool downloadAndInstall(const OtaManifest& manifest, String& error);
   bool startInstallTask(const OtaManifest& manifest, String& error);

@@ -9,6 +9,8 @@ const byte DNS_PORT = 53;
 const char* WIFI_PREF_NAMESPACE = "amap_wifi";
 const char* WIFI_PREF_SSID = "ssid";
 const char* WIFI_PREF_PASSWORD = "password";
+const char* DEV_PREF_NAMESPACE = "amap_dev";
+const char* DEV_PREF_TFT_PREVIEW = "tft_preview";
 
 bool isPlaceholderSsid(const String& ssid) {
   return ssid.isEmpty() || ssid == "car_hotspot_ssid";
@@ -21,12 +23,14 @@ NetworkManager::NetworkManager()
       portalGateway(192, 168, 4, 1),
       portalSubnet(255, 255, 255, 0) {}
 
-void NetworkManager::begin(OtaManager* ota) {
+void NetworkManager::begin(OtaManager* ota, const NavState* navigation) {
   otaManager = ota;
+  navigationState = navigation;
   WiFi.persistent(false);
   WiFi.setSleep(false);
   portalSsidName = makePortalSsid();
   loadCredentials();
+  loadDeveloperOptions();
 
   if (activeSsid.isEmpty()) {
     startConfigPortal("未配置 Wi-Fi，请连接配网热点。");
@@ -206,6 +210,25 @@ void NetworkManager::clearSavedCredentials() {
   loadCredentials();
 }
 
+void NetworkManager::loadDeveloperOptions() {
+  Preferences prefs;
+  if (!prefs.begin(DEV_PREF_NAMESPACE, true)) {
+    developerPreviewEnabled = false;
+    return;
+  }
+  developerPreviewEnabled = prefs.getBool(DEV_PREF_TFT_PREVIEW, false);
+  prefs.end();
+}
+
+void NetworkManager::saveDeveloperPreview(bool enabled) {
+  Preferences prefs;
+  if (prefs.begin(DEV_PREF_NAMESPACE, false)) {
+    prefs.putBool(DEV_PREF_TFT_PREVIEW, enabled);
+    prefs.end();
+  }
+  developerPreviewEnabled = enabled;
+}
+
 bool NetworkManager::hasFallbackCredentials() const {
   const String fallbackSsid = AMAP_WIFI_SSID;
   return !isPlaceholderSsid(fallbackSsid);
@@ -326,6 +349,7 @@ void NetworkManager::configureRoutes() {
   webServer.on("/ota/check", HTTP_POST, [this]() { handleOtaCheck(); });
   webServer.on("/ota/upgrade", HTTP_POST, [this]() { handleOtaUpgrade(); });
   webServer.on("/ota/upgrade", HTTP_GET, [this]() { redirectToRoot(); });
+  webServer.on("/developer/preview", HTTP_POST, [this]() { handleDeveloperPreview(); });
   webServer.on("/status.json", HTTP_GET, [this]() { handleStatusJson(); });
   webServer.on("/generate_204", HTTP_GET, [this]() { redirectToPortal(); });
   webServer.on("/fwlink", HTTP_GET, [this]() { redirectToPortal(); });
@@ -449,6 +473,13 @@ void NetworkManager::handleOtaUpgrade() {
   webServer.send(200, "text/html; charset=utf-8", buildStatusPage(message));
 }
 
+void NetworkManager::handleDeveloperPreview() {
+  saveDeveloperPreview(webServer.hasArg("enabled") && webServer.arg("enabled") == "1");
+  webServer.sendHeader("Cache-Control", "no-store");
+  webServer.send(200, "text/html; charset=utf-8",
+                 buildStatusPage(developerPreviewEnabled ? "已开启 TFT 模拟显示。" : "已关闭 TFT 模拟显示。"));
+}
+
 bool NetworkManager::applyOtaChannelSelection(String& message) {
   if (!otaManager || !webServer.hasArg("channel")) {
     return true;
@@ -508,7 +539,7 @@ bool NetworkManager::shouldRedirectToPortal() {
 
 String NetworkManager::buildStatusPage(const String& message) const {
   String page;
-  page.reserve(9200);
+  page.reserve(14500);
   page += F("<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">");
   page += F("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
   page += F("<title>AMap ESP32 配置</title><style>");
@@ -521,6 +552,7 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += F("label{display:block;font-weight:650;margin:12px 0 6px}input,select{width:100%;box-sizing:border-box;border:1px solid #c8d2df;border-radius:6px;padding:11px;font-size:16px;background:#fff}");
   page += F("button{border:0;border-radius:6px;background:#1769e0;color:white;font-weight:700;padding:11px 14px;font-size:15px;margin-top:14px;cursor:pointer}");
   page += F("button:disabled{background:#9aa5b1;cursor:not-allowed}button.secondary{background:#687385}.hint{font-size:13px;color:#637083;line-height:1.5}.notes{white-space:pre-wrap;font-weight:500;line-height:1.5}");
+  page += F(".dev-title{display:flex;justify-content:space-between;align-items:center;gap:12px}.dev-tag{font:700 11px/1 monospace;letter-spacing:.08em;color:#3c6eaf}.toggle{display:flex;align-items:center;gap:9px;font-weight:650}.toggle input{width:auto;accent-color:#1769e0}.tft{margin-top:16px;background:#0a1017;color:#e8f1ff;border:1px solid #30455d;border-radius:18px;padding:12px;box-shadow:inset 0 0 0 2px #122131,0 12px 28px rgba(8,20,35,.2);font-family:ui-monospace,'Cascadia Code',monospace}.tft-head{display:grid;grid-template-columns:auto 1fr auto;gap:9px;align-items:center;color:#a6c6e7;font-size:11px}.tft-mode{color:#69d6ff;font-weight:800;letter-spacing:.1em}.tft-road{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tft-speed{font-size:16px;font-weight:800;color:#fff}.tft-turn{display:grid;grid-template-columns:58px 1fr;gap:10px;margin:13px 0 10px;align-items:center}.tft-arrow{font-size:44px;line-height:1;color:#52d1ff;text-align:center}.tft-turn b,.tft-turn small{display:block}.tft-turn b{font-size:18px}.tft-turn small{margin-top:3px;color:#96a9bd}.tft-progress{height:5px;border-radius:99px;background:#24394e;overflow:hidden;margin:9px 0}.tft-progress i{display:block;height:100%;width:0;background:linear-gradient(90deg,#41c6ff,#a5eb65)}.tft-tmc-head{display:flex;justify-content:space-between;margin:11px 0 5px;color:#96a9bd;font-size:10px;letter-spacing:.08em}.tft-tmc{position:relative;height:8px;border-radius:99px;background:#24394e;overflow:visible}.tmc-segments{display:flex;height:100%;border-radius:99px;overflow:hidden}.tmc-segments i{display:block;height:100%;min-width:1px}.tmc-marker{position:absolute;top:-4px;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:8px solid #f4fbff;filter:drop-shadow(0 1px 1px #000);transform:translateX(-50%)}.tft-meta{display:grid;grid-template-columns:repeat(2,1fr);gap:7px;color:#b7c9d8;font-size:11px;margin-top:10px}.tft-meta span{border-left:2px solid #2d8aac;padding-left:6px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tft-alert{margin-top:10px;color:#ffd56a;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}");
   page += F(".progress{margin-top:4px}.progress-track{height:10px;background:#e3eaf5;border-radius:999px;overflow:hidden}.progress-bar{height:100%;width:0;background:#1769e0;transition:width .2s ease}.progress-meta{display:flex;justify-content:space-between;gap:12px;margin-top:8px;font-size:13px;color:#4d5b6c}</style></head><body><main>");
   page += F("<h1>AMap ESP32 配置</h1><p class=\"sub\">网络状态、配网页面与 OTA 工具。</p>");
 
@@ -570,6 +602,17 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += F("<button class=\"secondary\" type=\"submit\">清除已保存的 Wi-Fi</button>");
   page += F("</form><p class=\"hint\">清除后将回退到 Config.h 中的兜底 Wi-Fi；如果没有可用兜底配置，则保持在 AP 配网模式。</p></section>");
 
+  page += F("<section class=\"panel\"><div class=\"dev-title\"><h2 style=\"font-size:18px;margin:0\">开发者选项</h2><span class=\"dev-tag\">TFT LAB</span></div>");
+  page += F("<form method=\"post\" action=\"/developer/preview\"><label class=\"toggle\"><input type=\"checkbox\" name=\"enabled\" value=\"1\"");
+  page += developerPreviewEnabled ? F(" checked") : F("");
+  page += F(">启用 SPI TFT 模拟显示</label><button class=\"secondary\" type=\"submit\">保存开发者选项</button></form>");
+  page += F("<p class=\"hint\">严格使用最近一次成功解析的 UDP JSON；未收到有效帧时显示等待状态。此选项只影响配置页预览，不改变 OLED 输出。</p>");
+  page += F("<div id=\"tftPreview\" class=\"tft\"");
+  page += developerPreviewEnabled ? F("") : F(" style=\"display:none\"");
+  page += F("><div class=\"tft-head\"><span id=\"tftMode\" class=\"tft-mode\">WAIT</span><span id=\"tftRoad\" class=\"tft-road\">等待 UDP JSON</span><span id=\"tftSpeed\" class=\"tft-speed\">--</span></div>");
+  page += F("<div class=\"tft-turn\"><span id=\"tftArrow\" class=\"tft-arrow\">·</span><div><b id=\"tftTurn\">尚未接收到有效导航帧</b><small id=\"tftNext\">请从 Android 转发器发送测试帧</small></div></div>");
+  page += F("<div class=\"tft-progress\"><i id=\"tftProgress\" style=\"width:0%\"></i></div><div class=\"tft-tmc-head\"><span>TMC TRAFFIC</span><span id=\"tftTmcLabel\">等待数据</span></div><div class=\"tft-tmc\"><div id=\"tftTmcSegments\" class=\"tmc-segments\"></div><i id=\"tftTmcMarker\" class=\"tmc-marker\" style=\"left:0%;display:none\"></i></div><div class=\"tft-meta\"><span id=\"tftEta\">--</span><span id=\"tftDestination\">--</span><span id=\"tftGuide\">--</span><span id=\"tftTraffic\">--</span></div><div id=\"tftAlert\" class=\"tft-alert\">等待 UDP JSON</div></div></section>");
+
   page += F("<section class=\"panel\"><h2 style=\"font-size:18px;margin:0 0 12px\">OTA 更新</h2><div class=\"grid\">");
   page += F("<div class=\"k\">当前版本</div><div id=\"otaCurrent\" class=\"v\">");
   page += otaManager ? htmlEscape(otaManager->currentVersion() + " build " + String(otaManager->currentBuild()))
@@ -608,12 +651,14 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += F("<p class=\"hint\">所选更新渠道可以与当前运行固件的渠道不同。更新为手动触发；manifest 与固件 URL 遇到重定向时会自动跟随。</p></section>");
 
   page += F("<script>(function(){function e(i){return document.getElementById(i)}function t(i,v){var n=e(i);if(n)n.textContent=v||''}function sc(){var c=e('otaChannelSelect');var h=e('otaUpgradeChannel');if(c&&h)h.value=c.value||'stable'}function bc(){var c=e('otaChannelSelect');if(!c||c.dataset.bound)return;c.dataset.bound='1';c.addEventListener('change',function(){c.dataset.dirty='1';c.dataset.pending=c.value||'stable';sc()});c.addEventListener('input',function(){c.dataset.dirty='1';c.dataset.pending=c.value||'stable';sc()});sc()}");
+  page += F("function d(v,f){return v===undefined||v===null||v===''?f:v}function tc(s){return s===10?'#666':s===0?'#2196f3':s===1?'#1abf54':s===2?'#ffd600':s===3?'#ff1744':s===4?'#b71c1c':s===5?'#007d5d':'#333'}function tm(n){var x=(n||{}).tmc||{},a=x.segments||[],b=e('tftTmcSegments'),m=e('tftTmcMarker'),l=e('tftTmcLabel');if(!b)return;b.textContent='';if(!a.length||!(x.totalDistance>0)){if(l)l.textContent='等待数据';if(m)m.style.display='none';return}var sum=0;for(var i=0;i<a.length;i++)sum+=Math.max(0,Number(a[i].distance)||0);if(!(sum>0))sum=x.totalDistance;for(var j=0;j<a.length;j++){var q=document.createElement('i');q.style.flex=String(Math.max(0,Number(a[j].distance)||0));q.style.background=tc(Number(a[j].status));b.appendChild(q)}var p=Math.max(0,Math.min(100,(Number(x.finishDistance)||0)/Number(x.totalDistance)*100));if(m){m.style.left=String(p)+'%';m.style.display='block'}if(l)l.textContent=String(a.length)+' 段 · '+Math.round(p)+'%'}function pv(n){n=n||{};if(!n.active){t('tftMode','WAIT');t('tftRoad','等待 UDP JSON');t('tftSpeed','--');t('tftArrow','·');t('tftTurn','尚未接收到有效导航帧');t('tftNext','请从 Android 转发器发送测试帧');t('tftEta','--');t('tftDestination','--');t('tftGuide','--');t('tftTraffic','--');t('tftAlert','等待 UDP JSON');var z=e('tftProgress');if(z)z.style.width='0%';tm({});return}var r=n.route||{},g=n.guide||{},ri=n.roadInfo||{},u=n.turn||{},s=n.speed||{};var icon=Number(u.icon||0),a=(icon===2||icon===4||icon===6||icon===18)?'←':((icon===8)?'↻':((icon===3||icon===5||icon===7||icon===19)?'→':'↑'));t('tftMode',String(d(n.mode,'nav')).toUpperCase());t('tftRoad',d(n.road,'--'));t('tftSpeed',s.current>=0?s.current:'--');t('tftArrow',a);t('tftTurn',d((d(u.text,'直行'))+' '+d(u.distanceText,''),'直行'));t('tftNext',d(u.road,'--'));t('tftEta',(d((n.eta||{}).remainTimeText,'--'))+' · '+d((n.eta||{}).remainDistanceText,'--'));t('tftDestination',d(r.destination,'--'));t('tftGuide',d(g.exitName?g.exitName+(g.exitDirection?' · '+g.exitDirection:''):(g.serviceAreaName?'服务区 '+g.serviceAreaName+' '+d(g.serviceAreaDistance,''):'--'),'--'));t('tftTraffic',(d(ri.type,'--'))+(ri.traffic?' · '+ri.traffic:'')+(ri.crossMap?' · 路口放大图':''));t('tftAlert',d(n.alert,d(n.lightText,'--')));var p=Number(r.progressPercent);if(!(p>=0&&p<=100))p=0;var b=e('tftProgress');if(b)b.style.width=String(p)+'%';tm(n)}");
   page += F("function poll(){fetch('/status.json',{cache:'no-store'}).then(function(r){return r.ok?r.json():null}).then(function(s){if(!s)return;");
   page += F("var w=e('wifiStatus');if(w){w.textContent=s.wifiStatus||'';w.className='v '+(s.connected?'ok':'bad')}");
   page += F("t('currentSsid',s.ssid||'未配置');t('credentialSource',s.source||'none');t('staIp',s.staIp||'未连接');t('udpPort',String(s.udpPort||''));");
   page += F("t('portalSsid',s.portalActive?s.portalSsid:'未启用');t('portalUrl',s.portalActive?s.portalUrl:(s.staIp?('http://'+s.staIp+'/'):'未连接'));");
   page += F("if(s.ota){t('otaCurrent',s.ota.currentVersion+' build '+s.ota.currentBuild);t('otaChannel',s.ota.currentChannel);t('otaSelectedChannel',s.ota.selectedChannel||'');t('otaLatest',s.ota.latestBuildInfo||'未检查');t('otaStatus',s.ota.status);t('otaNotes',s.ota.changelog||s.ota.releaseNotes||'');t('otaError',s.ota.lastError||'');var c=e('otaChannelSelect');if(c&&s.ota.selectedChannel)c.value=s.ota.selectedChannel;var h=document.querySelector('form[action=\"/ota/upgrade\"] input[name=\"channel\"]');if(h&&s.ota.selectedChannel)h.value=s.ota.selectedChannel}");
   page += F("if(s.ota){var pb=e('otaProgressBar');if(pb)pb.style.width=String(s.ota.progressPercent||0)+'%';t('otaProgressText',s.ota.progressText||'未开始');t('otaProgressPercent',String(s.ota.progressPercent||0)+'%');var busy=!!s.ota.busy;var cb=document.querySelector('form[action=\"/ota/check\"] button');if(cb)cb.disabled=busy;var ub=document.querySelector('form[action=\"/ota/upgrade\"] button');if(ub)ub.disabled=busy;}");
+  page += F("if(s.developerPreview)pv(s.nav);");
   page += F("var c2=e('otaChannelSelect');if(c2&&c2.dataset.dirty&&c2.dataset.pending){if(s.ota&&c2.dataset.pending===s.ota.selectedChannel){c2.dataset.dirty='';c2.dataset.pending=''}else{c2.value=c2.dataset.pending;sc()}}");
   page += F("var p=e('errorPanel');var l=e('lastError');if(p&&l){l.textContent=s.lastError||'';p.style.display=s.lastError?'':'none'}}).catch(function(){})}");
   page += F("bc();setInterval(poll,800);setTimeout(poll,200)})();</script>");
@@ -623,7 +668,7 @@ String NetworkManager::buildStatusPage(const String& message) const {
 
 String NetworkManager::buildStatusJson() const {
   String json;
-  json.reserve(512);
+  json.reserve(1800);
   json += "{";
   json += "\"connected\":";
   json += isConnected() ? "true" : "false";
@@ -638,10 +683,81 @@ String NetworkManager::buildStatusJson() const {
   json += ",\"udpPort\":";
   json += String(AMAP_UDP_PORT);
   json += ",\"lastError\":\"" + jsonEscape(lastError) + "\"";
+  json += ",\"developerPreview\":";
+  json += developerPreviewEnabled ? "true" : "false";
+  json += ",\"nav\":";
+  json += buildNavigationJson();
   if (otaManager) {
     json += ",\"ota\":";
     json += otaManager->statusJson();
   }
+  json += "}";
+  return json;
+}
+
+String NetworkManager::buildNavigationJson() const {
+  NavState empty;
+  const NavState& state = navigationState ? *navigationState : empty;
+  String laneText;
+  for (uint8_t i = 0; i < state.lane.count; ++i) {
+    if (!laneText.isEmpty()) {
+      laneText += " ";
+    }
+    laneText += state.lane.advised[i] ? "[" : "";
+    laneText += String(state.lane.lanes[i]);
+    laneText += state.lane.advised[i] ? "]" : "";
+  }
+
+  String lightText;
+  if (state.lightCount > 0) {
+    const LightState& light = state.lights[0];
+    const char* color = light.status == 1 ? "红灯" : (light.status == 4 ? "绿灯" : "黄灯");
+    lightText = String(color) + " " + String(light.seconds) + "s";
+  }
+
+  String json;
+  json.reserve(1050);
+  json += "{";
+  json += "\"active\":";
+  json += state.active ? "true" : "false";
+  json += ",\"mode\":\"" + jsonEscape(state.mode) + "\"";
+  json += ",\"road\":\"" + jsonEscape(state.road) + "\"";
+  json += ",\"heading\":\"" + jsonEscape(state.heading) + "\"";
+  json += ",\"turn\":{\"icon\":" + String(state.turn.icon);
+  json += ",\"text\":\"" + jsonEscape(state.turn.text) + "\"";
+  json += ",\"distanceText\":\"" + jsonEscape(state.turn.distanceText) + "\"";
+  json += ",\"road\":\"" + jsonEscape(state.turn.road) + "\"}";
+  json += ",\"eta\":{\"remainDistanceText\":\"" +
+          jsonEscape(state.eta.remainDistanceText) + "\"";
+  json += ",\"remainTimeText\":\"" + jsonEscape(state.eta.remainTimeText) + "\"}";
+  json += ",\"speed\":{\"current\":" + String(state.speed.current);
+  json += ",\"limit\":" + String(state.speed.limit) + "}";
+  json += ",\"tmc\":{\"totalDistance\":" + String(state.tmc.totalDistance);
+  json += ",\"finishDistance\":" + String(state.tmc.finishDistance);
+  json += ",\"segments\":[";
+  for (uint8_t i = 0; i < state.tmc.count; ++i) {
+    if (i > 0) {
+      json += ",";
+    }
+    json += "{\"status\":" + String(state.tmc.status[i]);
+    json += ",\"distance\":" + String(state.tmc.distance[i]) + "}";
+  }
+  json += "]}";
+  json += ",\"route\":{\"progressPercent\":" + String(state.route.progressPercent);
+  json += ",\"destination\":\"" + jsonEscape(state.route.destination) + "\"";
+  json += ",\"remainingTrafficLights\":" + String(state.route.remainingTrafficLights) + "}";
+  json += ",\"roadInfo\":{\"type\":\"" + jsonEscape(state.roadInfo.type) + "\"";
+  json += ",\"traffic\":\"" + jsonEscape(state.roadInfo.traffic) + "\"";
+  json += ",\"crossMap\":";
+  json += state.roadInfo.crossMap ? "true" : "false";
+  json += "}";
+  json += ",\"guide\":{\"exitName\":\"" + jsonEscape(state.guide.exitName) + "\"";
+  json += ",\"exitDirection\":\"" + jsonEscape(state.guide.exitDirection) + "\"";
+  json += ",\"serviceAreaName\":\"" + jsonEscape(state.guide.serviceAreaName) + "\"";
+  json += ",\"serviceAreaDistance\":\"" + jsonEscape(state.guide.serviceAreaDistance) + "\"}";
+  json += ",\"laneText\":\"" + jsonEscape(laneText) + "\"";
+  json += ",\"lightText\":\"" + jsonEscape(lightText) + "\"";
+  json += ",\"alert\":\"" + jsonEscape(state.alert) + "\"";
   json += "}";
   return json;
 }

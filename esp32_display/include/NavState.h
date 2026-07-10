@@ -43,6 +43,45 @@ struct CameraState {
   int speedLimit = -1;
 };
 
+struct TmcState {
+  static const uint8_t MAX_SEGMENTS = 8;
+  int totalDistance = -1;
+  int finishDistance = -1;
+  int status[MAX_SEGMENTS] = {0};
+  int distance[MAX_SEGMENTS] = {0};
+  uint8_t count = 0;
+
+  void clear();
+};
+
+// These protocol fields are intentionally display-driver agnostic. The OLED
+// uses them as rotating secondary text today; a future SPI TFT can render the
+// same structured data in a denser dashboard without changing the phone link.
+struct RouteState {
+  int remainingMeters = -1;
+  int totalMeters = -1;
+  int remainingSeconds = -1;
+  int progressPercent = -1;
+  String destination;
+  int remainingTrafficLights = -1;
+};
+
+struct RoadInfoState {
+  String type;
+  int bearing = -1;
+  String traffic;
+  bool crossMap = false;
+};
+
+struct GuideInfoState {
+  String exitName;
+  String exitDirection;
+  String serviceAreaName;
+  String serviceAreaDistance;
+  String nextServiceAreaName;
+  String nextServiceAreaDistance;
+};
+
 struct NavState {
   static const uint8_t MAX_LIGHTS = 4;
 
@@ -57,6 +96,10 @@ struct NavState {
   LightState lights[MAX_LIGHTS];
   uint8_t lightCount = 0;
   CameraState camera;
+  TmcState tmc;
+  RouteState route;
+  RoadInfoState roadInfo;
+  GuideInfoState guide;
   String alert;
   String detail;
   uint32_t seq = 0;

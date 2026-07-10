@@ -8,6 +8,16 @@ void LaneState::clear() {
   }
 }
 
+void TmcState::clear() {
+  totalDistance = -1;
+  finishDistance = -1;
+  count = 0;
+  for (uint8_t i = 0; i < MAX_SEGMENTS; ++i) {
+    status[i] = 0;
+    distance[i] = 0;
+  }
+}
+
 void NavState::reset() {
   active = false;
   mode = "standby";
@@ -19,6 +29,7 @@ void NavState::reset() {
   lane.clear();
   lightCount = 0;
   camera = CameraState();
+  tmc.clear();
   alert = "";
   detail = "";
   seq = 0;

@@ -42,7 +42,9 @@
 #define OTA_HEALTHY_MARK_DELAY_MS 8000UL
 
 #define AMAP_UDP_PORT 4210
-#define AMAP_PACKET_BUFFER_SIZE 1200
+// Rich route, road and service-area fields can exceed the old 1200-byte
+// snapshot. The Android sender compacts verbose fields when needed.
+#define AMAP_PACKET_BUFFER_SIZE 2048
 #define AMAP_STALE_MS 3000UL
 #define AMAP_STANDBY_MS 10000UL
 
@@ -60,6 +62,31 @@
 
 // Default: common 0.96" SSD1306 128x64 I2C OLED.
 #define AMAP_OLED_DRIVER AMAP_OLED_DRIVER_SSD1306_12864
+
+// Display profile. The current renderer stays on the I2C OLED; the shared
+// NavState protocol and web simulator are already sized for the future SPI
+// TFT dashboard. Set these pin values when the exact TFT module is chosen.
+#define AMAP_DISPLAY_PROFILE_OLED 1
+#define AMAP_DISPLAY_PROFILE_TFT 2
+#ifndef AMAP_DISPLAY_PROFILE
+#define AMAP_DISPLAY_PROFILE AMAP_DISPLAY_PROFILE_OLED
+#endif
+
+#define AMAP_TFT_DRIVER_ST7789 1
+#define AMAP_TFT_DRIVER_ILI9341 2
+#ifndef AMAP_TFT_DRIVER
+#define AMAP_TFT_DRIVER AMAP_TFT_DRIVER_ST7789
+#endif
+#define AMAP_TFT_WIDTH 320
+#define AMAP_TFT_HEIGHT 240
+#define AMAP_TFT_ROTATION 1
+#define AMAP_TFT_SCLK_PIN -1
+#define AMAP_TFT_MOSI_PIN -1
+#define AMAP_TFT_MISO_PIN -1
+#define AMAP_TFT_CS_PIN -1
+#define AMAP_TFT_DC_PIN -1
+#define AMAP_TFT_RST_PIN -1
+#define AMAP_TFT_BL_PIN -1
 
 // 1 enables a U8g2 CJK-capable font for Chinese roads/labels. Set to 0 if
 // firmware size is tight or your display only needs ASCII.

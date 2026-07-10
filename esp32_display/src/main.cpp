@@ -50,7 +50,7 @@ void setup() {
   oledReady = true;
   scanI2CBus();
   ota.begin();
-  network.begin(&ota);
+  network.begin(&ota, &navState);
 }
 
 void loop() {

@@ -23,5 +23,9 @@ private:
   String laneText(const NavState& state) const;
   String lightText(const NavState& state) const;
   String cameraText(const NavState& state) const;
+  String tmcText(const NavState& state) const;
+  String routeText(const NavState& state) const;
+  String guideText(const NavState& state) const;
+  String roadInfoText(const NavState& state) const;
   String bottomText(const NavState& state) const;
 };

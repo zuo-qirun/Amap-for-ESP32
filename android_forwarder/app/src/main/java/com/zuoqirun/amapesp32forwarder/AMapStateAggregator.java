@@ -30,6 +30,8 @@ final class AMapStateAggregator {
         updateAlert(extras);
         updateTurn(extras, keyType);
         updateEta(extras);
+        updateGuideInfo(extras);
+        updateTmc(extras, keyType);
         updateLane(extras);
         if (isTrafficLightAction(intent.getAction()) || TrafficLightParser.hasTrafficLightPayload(extras)) {
             updateTrafficLights(extras);
@@ -118,6 +120,23 @@ final class AMapStateAggregator {
         state.camera.type = -1;
         state.camera.distance = -1;
         state.camera.speedLimit = -1;
+        state.tmc.clear();
+        state.route.remainingMeters = -1;
+        state.route.totalMeters = -1;
+        state.route.remainingSeconds = -1;
+        state.route.progressPercent = -1;
+        state.route.destination = "";
+        state.route.remainingTrafficLights = -1;
+        state.roadInfo.type = "";
+        state.roadInfo.bearing = -1;
+        state.roadInfo.traffic = "";
+        state.roadInfo.crossMap = false;
+        state.guide.exitName = "";
+        state.guide.exitDirection = "";
+        state.guide.serviceAreaName = "";
+        state.guide.serviceAreaDistance = "";
+        state.guide.nextServiceAreaName = "";
+        state.guide.nextServiceAreaDistance = "";
         navigationTurnDir = -1;
         currentTurnIcon = 0;
         alertUpdatedAt = 0L;
@@ -174,17 +193,33 @@ final class AMapStateAggregator {
                 "routeRemainTimeAuto", "remainTime");
         String eta = BundleReaders.valueString(extras, "ETA_TEXT", "etaText", "eta",
                 "arrivalTime", "arriveTime");
+        int remainingMeters = BundleReaders.intValue(extras, -1, "ROUTE_REMAIN_DIS", "remainDistance");
         if (TextUtils.isEmpty(distance)) {
-            int meters = BundleReaders.intValue(extras, -1, "ROUTE_REMAIN_DIS", "remainDistance");
+            int meters = remainingMeters;
             if (meters > 0) {
                 distance = formatDistance(meters);
             }
         }
+        if (remainingMeters >= 0) {
+            state.route.remainingMeters = remainingMeters;
+        }
+        int totalMeters = BundleReaders.intValue(extras, -1, "ROUTE_ALL_DIS", "routeAllDistance");
+        if (totalMeters > 0) {
+            state.route.totalMeters = totalMeters;
+            if (remainingMeters >= 0) {
+                state.route.progressPercent = Math.max(0, Math.min(100,
+                        Math.round((1f - (float) remainingMeters / totalMeters) * 100f)));
+            }
+        }
+        int remainingSeconds = BundleReaders.intValue(extras, -1, "ROUTE_REMAIN_TIME", "remainTimeSeconds");
         if (TextUtils.isEmpty(time)) {
-            int seconds = BundleReaders.intValue(extras, -1, "ROUTE_REMAIN_TIME", "remainTimeSeconds");
+            int seconds = remainingSeconds;
             if (seconds > 0) {
                 time = formatDuration(seconds);
             }
+        }
+        if (remainingSeconds >= 0) {
+            state.route.remainingSeconds = remainingSeconds;
         }
         if (!TextUtils.isEmpty(distance)) {
             state.eta.remainDistanceText = distance;
@@ -200,6 +235,56 @@ final class AMapStateAggregator {
         if (!TextUtils.isEmpty(road) && !"目的地".equals(road)) {
             state.road = road;
         }
+
+        String destination = BundleReaders.valueString(extras, "endPOIName", "END_POI_NAME",
+                "DESTINATION_NAME", "destinationName");
+        if (!TextUtils.isEmpty(destination)) {
+            state.route.destination = destination;
+        }
+        int remainingLights = BundleReaders.intValue(extras, -1, "routeRemainTrafficLightNum",
+                "TRAFFIC_LIGHT_NUM", "remainingTrafficLights");
+        if (remainingLights >= 0) {
+            state.route.remainingTrafficLights = remainingLights;
+        }
+    }
+
+    private void updateGuideInfo(Bundle extras) {
+        String exitName = BundleReaders.valueString(extras, "EXIT_NAME_INFO", "exitName", "EXIT_NAME");
+        String exitDirection = BundleReaders.valueString(extras, "EXIT_DIRECTION_INFO", "exitDirection",
+                "EXIT_DIRECTION");
+        if (!TextUtils.isEmpty(exitName)) {
+            state.guide.exitName = exitName;
+        }
+        if (!TextUtils.isEmpty(exitDirection)) {
+            state.guide.exitDirection = exitDirection;
+        }
+
+        String serviceArea = BundleReaders.valueString(extras, "SAPA_NAME", "serviceAreaName");
+        String serviceAreaDistance = BundleReaders.valueString(extras, "SAPA_DIST_AUTO", "SAPA_DIST",
+                "serviceAreaDistance");
+        if (!TextUtils.isEmpty(serviceArea)) {
+            state.guide.serviceAreaName = serviceArea;
+        }
+        if (!TextUtils.isEmpty(serviceAreaDistance)) {
+            state.guide.serviceAreaDistance = serviceAreaDistance;
+        }
+
+        String nextServiceArea = BundleReaders.valueString(extras, "NEXT_SAPA_NAME", "nextServiceAreaName");
+        String nextServiceAreaDistance = BundleReaders.valueString(extras, "NEXT_SAPA_DIST_AUTO",
+                "NEXT_SAPA_DIST", "nextServiceAreaDistance");
+        if (!TextUtils.isEmpty(nextServiceArea)) {
+            state.guide.nextServiceAreaName = nextServiceArea;
+        }
+        if (!TextUtils.isEmpty(nextServiceAreaDistance)) {
+            state.guide.nextServiceAreaDistance = nextServiceAreaDistance;
+        }
+        if (extras.containsKey("EXTRA_CROSS_MAP")) {
+            state.roadInfo.crossMap = BundleReaders.intValue(extras, 0, "EXTRA_CROSS_MAP", "crossMap") != 0;
+        }
+    }
+
+    private void updateTmc(Bundle extras, int keyType) {
+        TmcInfoParser.update(extras, keyType, state.tmc);
     }
 
     private void updateLane(Bundle extras) {
@@ -274,7 +359,8 @@ final class AMapStateAggregator {
         int roadType = BundleReaders.intValue(extras, -1, "ROAD_TYPE", "roadType");
         ArrayList<String> details = new ArrayList<>();
         if (roadType >= 0) {
-            details.add(roadTypeName(roadType));
+            state.roadInfo.type = roadTypeName(roadType);
+            details.add(state.roadInfo.type);
         }
 
         String locationJson = BundleReaders.valueString(extras, "EXTRA_LOCATION_INFO");
@@ -294,11 +380,13 @@ final class AMapStateAggregator {
         }
         if (direction >= 0) {
             state.heading = bearingToCompass(direction);
+            state.roadInfo.bearing = direction;
         }
 
         String traffic = BundleReaders.valueString(extras, "EXTRA_LOCATION_TRAFFIC_INFO",
                 "EXTRA_TRAFFIC_CONDITION_RESULT_MESSAGE");
         if (!TextUtils.isEmpty(traffic)) {
+            state.roadInfo.traffic = traffic;
             details.add("前方路况 " + traffic);
         }
         String road = BundleReaders.valueString(extras, "CUR_ROAD_NAME", "ROAD_NAME", "roadName");

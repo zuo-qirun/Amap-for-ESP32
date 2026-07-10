@@ -15,6 +15,10 @@ final class Esp32NavState {
     final Lane lane = new Lane();
     final List<Light> lights = new ArrayList<>();
     final Camera camera = new Camera();
+    final Tmc tmc = new Tmc();
+    final Route route = new Route();
+    final RoadInfo roadInfo = new RoadInfo();
+    final GuideInfo guide = new GuideInfo();
     String alert = "";
     String detail = "";
     long updatedAt = System.currentTimeMillis();
@@ -44,6 +48,27 @@ final class Esp32NavState {
         out.camera.type = camera.type;
         out.camera.distance = camera.distance;
         out.camera.speedLimit = camera.speedLimit;
+        out.tmc.totalDistance = tmc.totalDistance;
+        out.tmc.finishDistance = tmc.finishDistance;
+        for (TmcSegment segment : tmc.segments) {
+            out.tmc.segments.add(segment.copy());
+        }
+        out.route.remainingMeters = route.remainingMeters;
+        out.route.totalMeters = route.totalMeters;
+        out.route.remainingSeconds = route.remainingSeconds;
+        out.route.progressPercent = route.progressPercent;
+        out.route.destination = route.destination;
+        out.route.remainingTrafficLights = route.remainingTrafficLights;
+        out.roadInfo.type = roadInfo.type;
+        out.roadInfo.bearing = roadInfo.bearing;
+        out.roadInfo.traffic = roadInfo.traffic;
+        out.roadInfo.crossMap = roadInfo.crossMap;
+        out.guide.exitName = guide.exitName;
+        out.guide.exitDirection = guide.exitDirection;
+        out.guide.serviceAreaName = guide.serviceAreaName;
+        out.guide.serviceAreaDistance = guide.serviceAreaDistance;
+        out.guide.nextServiceAreaName = guide.nextServiceAreaName;
+        out.guide.nextServiceAreaDistance = guide.nextServiceAreaDistance;
         out.alert = alert;
         out.detail = detail;
         out.updatedAt = updatedAt;
@@ -63,6 +88,18 @@ final class Esp32NavState {
             sb.append('|').append(light.dir).append(',').append(light.status).append(',').append(light.seconds);
         }
         sb.append('|').append(camera.type).append('|').append(camera.distance).append('|').append(camera.speedLimit);
+        sb.append('|').append(tmc.totalDistance).append('|').append(tmc.finishDistance);
+        for (TmcSegment segment : tmc.segments) {
+            sb.append('|').append(segment.status).append(',').append(segment.distance);
+        }
+        sb.append('|').append(route.remainingMeters).append('|').append(route.totalMeters).append('|')
+                .append(route.remainingSeconds).append('|').append(route.progressPercent).append('|')
+                .append(route.destination).append('|').append(route.remainingTrafficLights);
+        sb.append('|').append(roadInfo.type).append('|').append(roadInfo.bearing).append('|')
+                .append(roadInfo.traffic).append('|').append(roadInfo.crossMap);
+        sb.append('|').append(guide.exitName).append('|').append(guide.exitDirection).append('|')
+                .append(guide.serviceAreaName).append('|').append(guide.serviceAreaDistance).append('|')
+                .append(guide.nextServiceAreaName).append('|').append(guide.nextServiceAreaDistance);
         sb.append('|').append(alert).append('|').append(detail);
         return sb.toString();
     }
@@ -93,6 +130,26 @@ final class Esp32NavState {
         state.camera.type = 1;
         state.camera.distance = 350;
         state.camera.speedLimit = 80;
+        state.tmc.totalDistance = 28600;
+        state.tmc.finishDistance = 16300;
+        state.tmc.segments.add(new TmcSegment(10, 4200));
+        state.tmc.segments.add(new TmcSegment(1, 8700));
+        state.tmc.segments.add(new TmcSegment(2, 3900));
+        state.tmc.segments.add(new TmcSegment(3, 5200));
+        state.tmc.segments.add(new TmcSegment(1, 6600));
+        state.route.remainingMeters = 12300;
+        state.route.totalMeters = 28600;
+        state.route.remainingSeconds = 1080;
+        state.route.progressPercent = 57;
+        state.route.destination = "目的地";
+        state.route.remainingTrafficLights = 4;
+        state.roadInfo.type = "高速";
+        state.roadInfo.bearing = 90;
+        state.roadInfo.traffic = "前方畅通";
+        state.guide.exitName = "学院路出口";
+        state.guide.exitDirection = "靠右驶离";
+        state.guide.serviceAreaName = "清河服务区";
+        state.guide.serviceAreaDistance = "8.6公里";
         state.alert = "前方测速摄像头";
         return state;
     }
@@ -144,5 +201,57 @@ final class Esp32NavState {
         int type = -1;
         int distance = -1;
         int speedLimit = -1;
+    }
+
+    static final class Tmc {
+        static final int MAX_SEGMENTS = 8;
+        int totalDistance = -1;
+        int finishDistance = -1;
+        final List<TmcSegment> segments = new ArrayList<>();
+
+        void clear() {
+            totalDistance = -1;
+            finishDistance = -1;
+            segments.clear();
+        }
+    }
+
+    static final class TmcSegment {
+        int status;
+        int distance;
+
+        TmcSegment(int status, int distance) {
+            this.status = status;
+            this.distance = distance;
+        }
+
+        TmcSegment copy() {
+            return new TmcSegment(status, distance);
+        }
+    }
+
+    static final class Route {
+        int remainingMeters = -1;
+        int totalMeters = -1;
+        int remainingSeconds = -1;
+        int progressPercent = -1;
+        String destination = "";
+        int remainingTrafficLights = -1;
+    }
+
+    static final class RoadInfo {
+        String type = "";
+        int bearing = -1;
+        String traffic = "";
+        boolean crossMap;
+    }
+
+    static final class GuideInfo {
+        String exitName = "";
+        String exitDirection = "";
+        String serviceAreaName = "";
+        String serviceAreaDistance = "";
+        String nextServiceAreaName = "";
+        String nextServiceAreaDistance = "";
     }
 }

@@ -70,6 +70,54 @@ bool ProtocolParser::parse(const char* payload, size_t length, NavState& target,
   target.camera.type = camera["type"] | -1;
   target.camera.distance = camera["distance"] | -1;
   target.camera.speedLimit = camera["speedLimit"] | -1;
+
+  target.tmc.clear();
+  JsonObject tmc = root["tmc"].as<JsonObject>();
+  target.tmc.totalDistance = tmc["totalDistance"] | -1;
+  target.tmc.finishDistance = tmc["finishDistance"] | -1;
+  JsonArray tmcSegments = tmc["segments"].as<JsonArray>();
+  for (JsonObject segment : tmcSegments) {
+    if (target.tmc.count >= TmcState::MAX_SEGMENTS) {
+      break;
+    }
+    const int distance = segment["distance"] | 0;
+    if (distance <= 0) {
+      continue;
+    }
+    const uint8_t index = target.tmc.count++;
+    target.tmc.status[index] = segment["status"] | 0;
+    target.tmc.distance[index] = distance;
+  }
+  if (target.tmc.count == 0 || target.tmc.totalDistance <= 0) {
+    target.tmc.clear();
+  } else if (target.tmc.finishDistance < 0) {
+    target.tmc.finishDistance = 0;
+  } else if (target.tmc.finishDistance > target.tmc.totalDistance) {
+    target.tmc.finishDistance = target.tmc.totalDistance;
+  }
+
+  JsonObject route = root["route"].as<JsonObject>();
+  target.route.remainingMeters = route["remainingMeters"] | -1;
+  target.route.totalMeters = route["totalMeters"] | -1;
+  target.route.remainingSeconds = route["remainingSeconds"] | -1;
+  target.route.progressPercent = route["progressPercent"] | -1;
+  target.route.destination = limitText(readText(route["destination"] | ""), 48);
+  target.route.remainingTrafficLights = route["remainingTrafficLights"] | -1;
+
+  JsonObject roadInfo = root["roadInfo"].as<JsonObject>();
+  target.roadInfo.type = limitText(readText(roadInfo["type"] | ""), 24);
+  target.roadInfo.bearing = roadInfo["bearing"] | -1;
+  target.roadInfo.traffic = limitText(readText(roadInfo["traffic"] | ""), 48);
+  target.roadInfo.crossMap = roadInfo["crossMap"] | false;
+
+  JsonObject guide = root["guide"].as<JsonObject>();
+  target.guide.exitName = limitText(readText(guide["exitName"] | ""), 48);
+  target.guide.exitDirection = limitText(readText(guide["exitDirection"] | ""), 32);
+  target.guide.serviceAreaName = limitText(readText(guide["serviceAreaName"] | ""), 48);
+  target.guide.serviceAreaDistance = limitText(readText(guide["serviceAreaDistance"] | ""), 24);
+  target.guide.nextServiceAreaName = limitText(readText(guide["nextServiceAreaName"] | ""), 48);
+  target.guide.nextServiceAreaDistance =
+      limitText(readText(guide["nextServiceAreaDistance"] | ""), 24);
   target.alert = limitText(readText(root["alert"] | ""), 72);
   target.detail = limitText(readText(root["detail"] | ""), 120);
   target.lastPacketAt = millis();

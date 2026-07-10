@@ -222,17 +222,88 @@ String DisplayRenderer::cameraText(const NavState& state) const {
   return out;
 }
 
+String DisplayRenderer::tmcText(const NavState& state) const {
+  if (state.tmc.count == 0 || state.tmc.totalDistance <= 0) {
+    return "";
+  }
+  int slow = 0;
+  int congested = 0;
+  for (uint8_t i = 0; i < state.tmc.count; ++i) {
+    if (state.tmc.status[i] == 2) {
+      ++slow;
+    } else if (state.tmc.status[i] >= 3 && state.tmc.status[i] <= 4) {
+      ++congested;
+    }
+  }
+  String out = "路况 " + String(state.tmc.count) + "段";
+  if (congested > 0) {
+    out += " 拥堵 " + String(congested);
+  } else if (slow > 0) {
+    out += " 缓行 " + String(slow);
+  } else {
+    out += " 畅通";
+  }
+  return out;
+}
+
+String DisplayRenderer::routeText(const NavState& state) const {
+  String out;
+  if (!state.route.destination.isEmpty()) {
+    out = "目的地 " + state.route.destination;
+  }
+  if (state.route.remainingTrafficLights >= 0) {
+    if (!out.isEmpty()) {
+      out += " ";
+    }
+    out += "红绿灯 " + String(state.route.remainingTrafficLights);
+  }
+  return out;
+}
+
+String DisplayRenderer::guideText(const NavState& state) const {
+  if (!state.guide.exitName.isEmpty()) {
+    return "出口 " + state.guide.exitName +
+           (state.guide.exitDirection.isEmpty() ? "" : " " + state.guide.exitDirection);
+  }
+  if (!state.guide.serviceAreaName.isEmpty()) {
+    return "服务区 " + state.guide.serviceAreaName +
+           (state.guide.serviceAreaDistance.isEmpty() ? "" : " " + state.guide.serviceAreaDistance);
+  }
+  return "";
+}
+
+String DisplayRenderer::roadInfoText(const NavState& state) const {
+  String out = state.roadInfo.type;
+  if (!state.roadInfo.traffic.isEmpty()) {
+    if (!out.isEmpty()) {
+      out += " ";
+    }
+    out += state.roadInfo.traffic;
+  }
+  if (state.roadInfo.crossMap) {
+    if (!out.isEmpty()) {
+      out += " ";
+    }
+    out += "路口放大图";
+  }
+  return out;
+}
+
 String DisplayRenderer::bottomText(const NavState& state) const {
-  String slots[5] = {
+  String slots[9] = {
       lightText(state),
       cameraText(state),
+      tmcText(state),
       laneText(state),
+      routeText(state),
+      guideText(state),
+      roadInfoText(state),
       state.alert,
       state.detail,
   };
-  uint8_t start = (millis() / 2500UL) % 5;
-  for (uint8_t i = 0; i < 5; ++i) {
-    String candidate = slots[(start + i) % 5];
+  uint8_t start = (millis() / 2500UL) % 9;
+  for (uint8_t i = 0; i < 9; ++i) {
+    String candidate = slots[(start + i) % 9];
     if (!candidate.isEmpty()) {
       return candidate;
     }

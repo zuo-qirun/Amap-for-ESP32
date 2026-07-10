@@ -7,12 +7,13 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
 
+#include "NavState.h"
 #include "OtaManager.h"
 
 class NetworkManager {
 public:
   NetworkManager();
-  void begin(OtaManager* ota);
+  void begin(OtaManager* ota, const NavState* navigation = nullptr);
   void update();
   int readPacket(char* buffer, size_t capacity, IPAddress& remoteIp, uint16_t& remotePort);
   bool isConnected() const;
@@ -31,6 +32,7 @@ private:
   IPAddress portalGateway;
   IPAddress portalSubnet;
   OtaManager* otaManager = nullptr;
+  const NavState* navigationState = nullptr;
   String activeSsid;
   String activePassword;
   String credentialSource;
@@ -43,11 +45,14 @@ private:
   bool staConnecting = false;
   bool reconnectScheduled = false;
   bool udpStarted = false;
+  bool developerPreviewEnabled = false;
   unsigned long lastReconnectAttempt = 0;
   unsigned long connectStartedAt = 0;
   unsigned long reconnectAt = 0;
 
   void loadCredentials();
+  void loadDeveloperOptions();
+  void saveDeveloperPreview(bool enabled);
   void saveCredentials(const String& ssid, const String& password);
   void clearSavedCredentials();
   bool hasFallbackCredentials() const;
@@ -62,6 +67,7 @@ private:
   void handleClear();
   void handleOtaCheck();
   void handleOtaUpgrade();
+  void handleDeveloperPreview();
   bool applyOtaChannelSelection(String& message);
   void handleStatusJson();
   void handleNotFound();
@@ -70,6 +76,7 @@ private:
   bool shouldRedirectToPortal();
   String buildStatusPage(const String& message = String()) const;
   String buildStatusJson() const;
+  String buildNavigationJson() const;
   String wifiStatusName() const;
   String htmlEscape(String value) const;
   String jsonEscape(String value) const;

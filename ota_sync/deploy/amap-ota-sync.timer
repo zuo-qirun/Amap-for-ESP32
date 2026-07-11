@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically sync AMap ESP32 OTA artifacts
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1h
+Unit=amap-ota-sync.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

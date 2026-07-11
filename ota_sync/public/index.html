@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AMap OTA Update Server</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f7fb;
+      --panel: #ffffff;
+      --text: #152033;
+      --muted: #60708a;
+      --line: #d9e2ef;
+      --accent: #1570ef;
+      --good: #16794d;
+      --warn: #b54708;
+      --bad: #b42318;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: linear-gradient(180deg, #edf3fb 0%, #f8fbff 100%);
+      color: var(--text);
+    }
+    main {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 32px 20px 48px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 32px;
+      font-weight: 700;
+    }
+    p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+    .hero {
+      display: grid;
+      gap: 18px;
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: 0 20px 40px rgba(18, 38, 63, 0.06);
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 8px;
+    }
+    button, a.button {
+      appearance: none;
+      border: 0;
+      border-radius: 8px;
+      padding: 10px 16px;
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+      font: inherit;
+      text-decoration: none;
+    }
+    button.secondary, a.secondary {
+      background: #e7eef8;
+      color: #214161;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+      margin-top: 20px;
+    }
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 18px;
+    }
+    .panel h2 {
+      margin: 0 0 12px;
+      font-size: 18px;
+    }
+    .meta {
+      display: grid;
+      gap: 10px;
+    }
+    .meta-row {
+      display: grid;
+      grid-template-columns: 112px 1fr;
+      gap: 8px;
+      align-items: start;
+      font-size: 14px;
+    }
+    .meta-row strong {
+      color: var(--muted);
+      font-weight: 600;
+    }
+    pre {
+      margin: 0;
+      padding: 12px;
+      border-radius: 8px;
+      background: #0f172a;
+      color: #dbe8ff;
+      overflow: auto;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .status-synced { color: var(--good); }
+    .status-skipped { color: var(--warn); }
+    .status-failed,
+    .status-unknown { color: var(--bad); }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <div>
+        <h1>AMap OTA Update Server</h1>
+        <p>This page only shows public OTA status. Internal deployment details such as host, port, paths, and private sync settings are intentionally hidden.</p>
+      </div>
+      <div class="actions">
+        <button id="syncButton" type="button">Sync now</button>
+        <a class="button secondary" href="/health">Health JSON</a>
+        <a class="button secondary" href="/api/status">Status JSON</a>
+      </div>
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <h2>Service</h2>
+        <div class="meta" id="serviceMeta"></div>
+      </article>
+      <article class="panel">
+        <h2>Last Run</h2>
+        <div class="meta" id="lastRunMeta"></div>
+      </article>
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <h2>Stable Channel</h2>
+        <div class="meta" id="stableMeta"></div>
+      </article>
+      <article class="panel">
+        <h2>Dev Channel</h2>
+        <div class="meta" id="devMeta"></div>
+      </article>
+    </section>
+
+    <section class="panel" style="margin-top: 20px;">
+      <h2>Public Snapshot</h2>
+      <pre id="rawState">{}</pre>
+    </section>
+  </main>
+  <script>
+    function row(label, value, className = "") {
+      return `<div class="meta-row"><strong>${label}</strong><span class="${className}">${value ?? ""}</span></div>`;
+    }
+
+    function renderChannel(containerId, channel) {
+      const el = document.getElementById(containerId);
+      if (!channel) {
+        el.innerHTML = row("Status", "Not synced yet");
+        return;
+      }
+      const statusClass = `status-${channel.status || "unknown"}`;
+      el.innerHTML = [
+        row("Status", channel.status || "-", statusClass),
+        row("Version", channel.version || "-"),
+        row("Build", String(channel.buildNumber || "-")),
+        row("Branch", channel.gitBranch || "-"),
+        row("Commit", channel.gitCommit || "-"),
+        row("Build Time", channel.buildTime || "-"),
+        row("Synced At", channel.syncedAt || "-"),
+        row("Notes", channel.releaseNotes || "-"),
+        row("Message", channel.lastError || "-")
+      ].join("");
+    }
+
+    async function refreshStatus() {
+      const response = await fetch("/api/status", { cache: "no-store" });
+      const data = await response.json();
+      const service = document.getElementById("serviceMeta");
+      const lastRun = document.getElementById("lastRunMeta");
+      const state = data.state || {};
+      service.innerHTML = [
+        row("Service", data.service || "-"),
+        row("Syncing", String(Boolean(data.syncing))),
+        row("Auto Sync", String(Boolean(data.autoSyncEnabled))),
+        row("Generated", state.generatedAt || "-")
+      ].join("");
+
+      const run = state.lastRun || {};
+      lastRun.innerHTML = [
+        row("Started", run.startedAt || "-"),
+        row("Finished", run.finishedAt || "-"),
+        row("Synced", String(run.synced ?? "-")),
+        row("Skipped", String(run.skipped ?? "-")),
+        row("Failed", String(run.failed ?? "-"))
+      ].join("");
+
+      renderChannel("stableMeta", state.channels?.stable);
+      renderChannel("devMeta", state.channels?.dev);
+      document.getElementById("rawState").textContent = JSON.stringify(data, null, 2);
+    }
+
+    document.getElementById("syncButton").addEventListener("click", async () => {
+      await fetch("/sync", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}"
+      });
+      setTimeout(refreshStatus, 800);
+    });
+
+    refreshStatus();
+    setInterval(refreshStatus, 10000);
+  </script>
+</body>
+</html>

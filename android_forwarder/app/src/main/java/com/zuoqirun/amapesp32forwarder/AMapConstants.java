@@ -31,11 +31,20 @@ final class AMapConstants {
 
     static final int NAV_STATE_NAVIGATING = 8;
     static final int NAV_STATE_NAV_EXIT = 9;
+    static final int NAV_STATE_SIMULATING = 5;
+    static final int NAV_STATE_SIMULATING_ALT = 6;
+    static final int NAV_STATE_NAVIGATING_ALT_10 = 10;
+    static final int NAV_STATE_NAVIGATING_ALT_11 = 11;
     static final int NAV_STATE_CRUISE = 24;
     static final int NAV_STATE_CRUISE_EXIT = 25;
 
+    static final int LIGHT_STATUS_YELLOW_0 = 0;
     static final int LIGHT_STATUS_RED = 1;
+    static final int LIGHT_STATUS_YELLOW_2 = 2;
+    static final int LIGHT_STATUS_YELLOW_3 = 3;
     static final int LIGHT_STATUS_GREEN = 4;
+    static final int LIGHT_STATUS_YELLOW_5 = 5;
+    static final int LIGHT_STATUS_YELLOW_6 = 6;
 
     static final int DIR_UTURN = 0;
     static final int DIR_LEFT = 1;

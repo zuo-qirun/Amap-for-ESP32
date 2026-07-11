@@ -9,6 +9,7 @@
 
 #include "NavState.h"
 #include "OtaManager.h"
+#include "TftPreviewRenderer.h"
 
 class NetworkManager {
 public:
@@ -33,6 +34,7 @@ private:
   IPAddress portalSubnet;
   OtaManager* otaManager = nullptr;
   const NavState* navigationState = nullptr;
+  TftPreviewRenderer tftPreview;
   String activeSsid;
   String activePassword;
   String credentialSource;
@@ -68,6 +70,7 @@ private:
   void handleOtaCheck();
   void handleOtaUpgrade();
   void handleDeveloperPreview();
+  void handleTftBitmap();
   bool applyOtaChannelSelection(String& message);
   void handleStatusJson();
   void handleNotFound();

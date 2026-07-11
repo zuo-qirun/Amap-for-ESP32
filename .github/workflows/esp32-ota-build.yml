@@ -93,12 +93,12 @@ jobs:
             --channel "${{ steps.meta.outputs.channel }}"
 
       - name: Build firmware
-        run: pio run -c platformio-ci.ini -e esp32-s3-devkitm-1
+        run: pio run -c platformio-ci.ini -e esp32-s3-n16r8
 
       - name: Package OTA artifacts
         run: |
           python scripts/package_ota.py \
-            --firmware .pio/build/esp32-s3-devkitm-1/firmware.bin \
+            --firmware .pio/build/esp32-s3-n16r8/firmware.bin \
             --out-dir dist/${{ steps.meta.outputs.channel }} \
             --channel ${{ steps.meta.outputs.channel }} \
             --version "${{ steps.meta.outputs.version }}" \

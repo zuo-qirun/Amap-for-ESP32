@@ -35,3 +35,5 @@ temp/
 __pycache__/
 ota_sync/node_modules/
 ota_sync/.env
+ota_sync/state/*.json
+ota_sync/public/ota/

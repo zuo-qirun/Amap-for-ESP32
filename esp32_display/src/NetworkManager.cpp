@@ -351,6 +351,7 @@ void NetworkManager::configureRoutes() {
   webServer.on("/ota/upgrade", HTTP_GET, [this]() { redirectToRoot(); });
   webServer.on("/developer/preview", HTTP_POST, [this]() { handleDeveloperPreview(); });
   webServer.on("/status.json", HTTP_GET, [this]() { handleStatusJson(); });
+  webServer.on("/tft.bmp", HTTP_GET, [this]() { handleTftBitmap(); });
   webServer.on("/generate_204", HTTP_GET, [this]() { redirectToPortal(); });
   webServer.on("/fwlink", HTTP_GET, [this]() { redirectToPortal(); });
   webServer.on("/hotspot-detect.html", HTTP_GET, [this]() { redirectToPortal(); });
@@ -505,6 +506,20 @@ void NetworkManager::handleStatusJson() {
   webServer.send(200, "application/json; charset=utf-8", buildStatusJson());
 }
 
+void NetworkManager::handleTftBitmap() {
+  if (!developerPreviewEnabled) {
+    webServer.send(404, "text/plain; charset=utf-8", "TFT preview is disabled");
+    return;
+  }
+
+  NavState empty;
+  const NavState& state = navigationState ? *navigationState : empty;
+  const unsigned long silenceMs = state.lastPacketAt == 0 ? ULONG_MAX : millis() - state.lastPacketAt;
+  if (!tftPreview.sendBmp(webServer, state, isConnected(), silenceMs)) {
+    webServer.send(503, "text/plain; charset=utf-8", "TFT preview framebuffer unavailable");
+  }
+}
+
 void NetworkManager::handleNotFound() {
   if (portalActive) {
     redirectToPortal();
@@ -539,7 +554,7 @@ bool NetworkManager::shouldRedirectToPortal() {
 
 String NetworkManager::buildStatusPage(const String& message) const {
   String page;
-  page.reserve(14500);
+  page.reserve(26000);
   page += F("<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">");
   page += F("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
   page += F("<title>AMap ESP32 配置</title><style>");
@@ -552,7 +567,7 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += F("label{display:block;font-weight:650;margin:12px 0 6px}input,select{width:100%;box-sizing:border-box;border:1px solid #c8d2df;border-radius:6px;padding:11px;font-size:16px;background:#fff}");
   page += F("button{border:0;border-radius:6px;background:#1769e0;color:white;font-weight:700;padding:11px 14px;font-size:15px;margin-top:14px;cursor:pointer}");
   page += F("button:disabled{background:#9aa5b1;cursor:not-allowed}button.secondary{background:#687385}.hint{font-size:13px;color:#637083;line-height:1.5}.notes{white-space:pre-wrap;font-weight:500;line-height:1.5}");
-  page += F(".dev-title{display:flex;justify-content:space-between;align-items:center;gap:12px}.dev-tag{font:700 11px/1 monospace;letter-spacing:.08em;color:#3c6eaf}.toggle{display:flex;align-items:center;gap:9px;font-weight:650}.toggle input{width:auto;accent-color:#1769e0}.tft{margin-top:16px;background:#0a1017;color:#e8f1ff;border:1px solid #30455d;border-radius:18px;padding:12px;box-shadow:inset 0 0 0 2px #122131,0 12px 28px rgba(8,20,35,.2);font-family:ui-monospace,'Cascadia Code',monospace}.tft-head{display:grid;grid-template-columns:auto 1fr auto;gap:9px;align-items:center;color:#a6c6e7;font-size:11px}.tft-mode{color:#69d6ff;font-weight:800;letter-spacing:.1em}.tft-road{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tft-speed{font-size:16px;font-weight:800;color:#fff}.tft-turn{display:grid;grid-template-columns:58px 1fr;gap:10px;margin:13px 0 10px;align-items:center}.tft-arrow{font-size:44px;line-height:1;color:#52d1ff;text-align:center}.tft-turn b,.tft-turn small{display:block}.tft-turn b{font-size:18px}.tft-turn small{margin-top:3px;color:#96a9bd}.tft-progress{height:5px;border-radius:99px;background:#24394e;overflow:hidden;margin:9px 0}.tft-progress i{display:block;height:100%;width:0;background:linear-gradient(90deg,#41c6ff,#a5eb65)}.tft-tmc-head{display:flex;justify-content:space-between;margin:11px 0 5px;color:#96a9bd;font-size:10px;letter-spacing:.08em}.tft-tmc{position:relative;height:8px;border-radius:99px;background:#24394e;overflow:visible}.tmc-segments{display:flex;height:100%;border-radius:99px;overflow:hidden}.tmc-segments i{display:block;height:100%;min-width:1px}.tmc-marker{position:absolute;top:-4px;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:8px solid #f4fbff;filter:drop-shadow(0 1px 1px #000);transform:translateX(-50%)}.tft-meta{display:grid;grid-template-columns:repeat(2,1fr);gap:7px;color:#b7c9d8;font-size:11px;margin-top:10px}.tft-meta span{border-left:2px solid #2d8aac;padding-left:6px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tft-alert{margin-top:10px;color:#ffd56a;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}");
+  page += F(".dev-title{display:flex;justify-content:space-between;align-items:center;gap:12px}.dev-tag{font:700 11px/1 monospace;letter-spacing:.08em;color:#3c6eaf}.toggle{display:flex;align-items:center;gap:9px;font-weight:650}.toggle input{width:auto;accent-color:#1769e0}.tft-shell{margin-top:16px;padding:18px;border-radius:26px;background:#14171b;box-shadow:inset 0 0 0 2px #343a41,inset 0 0 0 7px #080a0c,0 18px 38px rgba(5,12,20,.28)}.tft-glass{position:relative;overflow:hidden;width:100%;aspect-ratio:4/3;background:#000;border-radius:4px;box-shadow:0 0 0 1px #000,0 0 24px rgba(75,220,255,.08)}.tft-glass:after{content:'';pointer-events:none;position:absolute;inset:0;background:linear-gradient(115deg,rgba(255,255,255,.035),transparent 28%,transparent 72%,rgba(255,255,255,.018));mix-blend-mode:screen}.tft-canvas{display:block;width:100%;height:100%;image-rendering:pixelated}.tft-caption{display:flex;justify-content:space-between;gap:12px;margin-top:11px;color:#657184;font:700 11px/1.4 ui-monospace,'Cascadia Code',monospace}.tft-caption span:last-child{text-align:right}.tft-live{color:#087443}.tft-stale{color:#b45309}");
   page += F(".progress{margin-top:4px}.progress-track{height:10px;background:#e3eaf5;border-radius:999px;overflow:hidden}.progress-bar{height:100%;width:0;background:#1769e0;transition:width .2s ease}.progress-meta{display:flex;justify-content:space-between;gap:12px;margin-top:8px;font-size:13px;color:#4d5b6c}</style></head><body><main>");
   page += F("<h1>AMap ESP32 配置</h1><p class=\"sub\">网络状态、配网页面与 OTA 工具。</p>");
 
@@ -606,12 +621,10 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += F("<form method=\"post\" action=\"/developer/preview\"><label class=\"toggle\"><input type=\"checkbox\" name=\"enabled\" value=\"1\"");
   page += developerPreviewEnabled ? F(" checked") : F("");
   page += F(">启用 SPI TFT 模拟显示</label><button class=\"secondary\" type=\"submit\">保存开发者选项</button></form>");
-  page += F("<p class=\"hint\">严格使用最近一次成功解析的 UDP JSON；未收到有效帧时显示等待状态。此选项只影响配置页预览，不改变 OLED 输出。</p>");
-  page += F("<div id=\"tftPreview\" class=\"tft\"");
+  page += F("<p class=\"hint\">硬件数字孪生严格使用 ST7789 320×240 横屏的实际坐标、RGB565 色板和渲染优先级；显示内容来自最近一次成功解析的 UDP JSON，不改变 OLED 输出。</p>");
+  page += F("<div id=\"tftPreview\" class=\"tft-shell\"");
   page += developerPreviewEnabled ? F("") : F(" style=\"display:none\"");
-  page += F("><div class=\"tft-head\"><span id=\"tftMode\" class=\"tft-mode\">WAIT</span><span id=\"tftRoad\" class=\"tft-road\">等待 UDP JSON</span><span id=\"tftSpeed\" class=\"tft-speed\">--</span></div>");
-  page += F("<div class=\"tft-turn\"><span id=\"tftArrow\" class=\"tft-arrow\">·</span><div><b id=\"tftTurn\">尚未接收到有效导航帧</b><small id=\"tftNext\">请从 Android 转发器发送测试帧</small></div></div>");
-  page += F("<div class=\"tft-progress\"><i id=\"tftProgress\" style=\"width:0%\"></i></div><div class=\"tft-tmc-head\"><span>TMC TRAFFIC</span><span id=\"tftTmcLabel\">等待数据</span></div><div class=\"tft-tmc\"><div id=\"tftTmcSegments\" class=\"tmc-segments\"></div><i id=\"tftTmcMarker\" class=\"tmc-marker\" style=\"left:0%;display:none\"></i></div><div class=\"tft-meta\"><span id=\"tftEta\">--</span><span id=\"tftDestination\">--</span><span id=\"tftGuide\">--</span><span id=\"tftTraffic\">--</span></div><div id=\"tftAlert\" class=\"tft-alert\">等待 UDP JSON</div></div></section>");
+  page += F("><div class=\"tft-glass\"><img id=\"tftFrame\" class=\"tft-canvas\" src=\"/tft.bmp\" alt=\"ST7789 320x240 hardware frame\"></div><div class=\"tft-caption\"><span>ST7789 · 320×240 · ROTATION 1</span><span id=\"tftFreshness\" class=\"tft-stale\">等待 UDP</span></div></div></section>");
 
   page += F("<section class=\"panel\"><h2 style=\"font-size:18px;margin:0 0 12px\">OTA 更新</h2><div class=\"grid\">");
   page += F("<div class=\"k\">当前版本</div><div id=\"otaCurrent\" class=\"v\">");
@@ -658,10 +671,43 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += F("t('portalSsid',s.portalActive?s.portalSsid:'未启用');t('portalUrl',s.portalActive?s.portalUrl:(s.staIp?('http://'+s.staIp+'/'):'未连接'));");
   page += F("if(s.ota){t('otaCurrent',s.ota.currentVersion+' build '+s.ota.currentBuild);t('otaChannel',s.ota.currentChannel);t('otaSelectedChannel',s.ota.selectedChannel||'');t('otaLatest',s.ota.latestBuildInfo||'未检查');t('otaStatus',s.ota.status);t('otaNotes',s.ota.changelog||s.ota.releaseNotes||'');t('otaError',s.ota.lastError||'');var c=e('otaChannelSelect');if(c&&s.ota.selectedChannel)c.value=s.ota.selectedChannel;var h=document.querySelector('form[action=\"/ota/upgrade\"] input[name=\"channel\"]');if(h&&s.ota.selectedChannel)h.value=s.ota.selectedChannel}");
   page += F("if(s.ota){var pb=e('otaProgressBar');if(pb)pb.style.width=String(s.ota.progressPercent||0)+'%';t('otaProgressText',s.ota.progressText||'未开始');t('otaProgressPercent',String(s.ota.progressPercent||0)+'%');var busy=!!s.ota.busy;var cb=document.querySelector('form[action=\"/ota/check\"] button');if(cb)cb.disabled=busy;var ub=document.querySelector('form[action=\"/ota/upgrade\"] button');if(ub)ub.disabled=busy;}");
-  page += F("if(s.developerPreview)pv(s.nav);");
+  page += F("if(s.developerPreview){var tf=e('tftFreshness'),n=s.nav||{},age=Number(n.packetAgeMs),cfg=s.tft||{},stale=Number(cfg.staleMs)||3000,wait=Number(cfg.standbyMs)||10000;if(tf){if(!s.connected){tf.textContent='Wi-Fi disconnected';tf.className='tft-stale'}else if(!n.active||age<0||age>wait){tf.textContent='waiting for navigation';tf.className='tft-stale'}else if(age>stale){tf.textContent='phone data stale '+age+'ms';tf.className='tft-stale'}else{tf.textContent='UDP live · '+age+'ms';tf.className='tft-live'}}}");
   page += F("var c2=e('otaChannelSelect');if(c2&&c2.dataset.dirty&&c2.dataset.pending){if(s.ota&&c2.dataset.pending===s.ota.selectedChannel){c2.dataset.dirty='';c2.dataset.pending=''}else{c2.value=c2.dataset.pending;sc()}}");
   page += F("var p=e('errorPanel');var l=e('lastError');if(p&&l){l.textContent=s.lastError||'';p.style.display=s.lastError?'':'none'}}).catch(function(){})}");
   page += F("bc();setInterval(poll,800);setTimeout(poll,200)})();</script>");
+  page += F(R"BMP(<script>(function(){var frame=document.getElementById('tftFrame');if(!frame)return;function refresh(){frame.src='/tft.bmp?frame='+Date.now()}setInterval(refresh,1000)})();</script>)BMP");
+#if 0  // Superseded SVG and canvas preview implementation.
+  page += F("<script>(function(){function e(i){return document.getElementById(i)}function g(c){var U='&#8593;',L='&#8592;',R='&#8594;',UL='&#8624;',UR='&#8625;',a=[U,L,L+U,R,U+R,UL,L+R,L+U+R,UR,UL+U,U+UR,UL+L,R+UR,'/'+U,'/'+U,U,L,L+U,R,U+R,UL,L+R,L+U+R,UR,UL+U,U+UR,UL+L,R+UR,'/'+U,'/'+U,U+L,U+L,U+R,U+R,L+R,L+R,L+U+R,L+U+R,L+U+R,UL+U,UL+U,U+UR,U+UR,L+UL,L+UL,R+UR,R+UR,'/'+L+UR,L+UL];return c===62?L+U+R:(c===85?'/'+U:(c===89?'-':(a[c]||U)))}function draw(n){var x=(n||{}).lane||{},a=x.lanes||[],r=x.advised||[],b=e('tftLanes'),h=e('tftTmcSegments');if(!b&&h){b=document.createElement('div');b.id='tftLanes';b.className='tft-lanes';h.parentNode.parentNode.insertBefore(b,h.parentNode.previousSibling)}if(!b)return;b.textContent='';for(var i=0;i<a.length&&i<8;i++){var q=document.createElement('span'),c=Number(a[i]);q.className='tft-lane '+((r[i]||(c>=15&&c<=48))?'on':'');q.innerHTML=g(c);b.appendChild(q)}}function poll(){fetch('/status.json',{cache:'no-store'}).then(function(r){return r.ok?r.json():null}).then(function(s){if(s&&s.developerPreview)draw(s.nav)}).catch(function(){})}setInterval(poll,850);setTimeout(poll,240)})()</script>");
+  page += F("<script>(function(){function e(i){return document.getElementById(i)}function da(d){return d===0?'↻':d===1?'←':(d===2||d===3)?'→':d===4?'↑':d===5||d===6?'↖':d===7||d===8?'↗':'·'}function draw(n){var b=e('tftLights'),a=(n||{}).lights||[];if(!b)return;b.textContent='';for(var i=0;i<a.length&&i<4;i++){var x=a[i]||{},s=Number(x.status),q=document.createElement('span');q.className='tft-light '+(s===1?'red':s===4?'green':'yellow');var c=document.createElement('i');c.textContent=da(Number(x.dir));var v=document.createElement('b');v.textContent=String(Math.max(0,Number(x.seconds)||0));var u=document.createElement('small');u.textContent=s===1?'红':s===4?'绿':'黄';q.appendChild(c);q.appendChild(v);q.appendChild(u);b.appendChild(q)}}function poll(){fetch('/status.json',{cache:'no-store'}).then(function(r){return r.ok?r.json():null}).then(function(s){if(s&&s.developerPreview)draw(s.nav)}).catch(function(){})}setInterval(poll,800);setTimeout(poll,210)})()</script>");
+  page += F(R"TFT(<script>(function(){
+var cv=document.getElementById('tftCanvas'),g=cv&&cv.getContext('2d');if(!g)return;
+function rgb(v){var r=(v>>11)&31,m=(v>>5)&63,b=v&31;return'rgb('+Math.round(r*255/31)+','+Math.round(m*255/63)+','+Math.round(b*255/31)+')'}
+var C={bg:rgb(0x0861),panel:rgb(0x10a2),cyan:rgb(0x55ff),text:rgb(0xffff),muted:rgb(0x9cd3),yellow:rgb(0xfea0),gray:rgb(0x5aeb),red:rgb(0xd1a4),green:rgb(0x2589),head:rgb(0x0248),border:rgb(0x4268),prog:rgb(0x2945)};
+function rr(x,y,w,h,r,fill,stroke){g.beginPath();g.moveTo(x+r,y);g.arcTo(x+w,y,x+w,y+h,r);g.arcTo(x+w,y+h,x,y+h,r);g.arcTo(x,y+h,x,y,r);g.arcTo(x,y,x+w,y,r);g.closePath();if(fill){g.fillStyle=fill;g.fill()}if(stroke){g.strokeStyle=stroke;g.stroke()}}
+function cut(s,n){s=String(s||'');return s.length>n?s.substring(0,Math.max(0,n-1))+'…':s}function tx(x,y,s,c,n){g.font='12px "Microsoft YaHei","Noto Sans CJK SC",sans-serif';g.textBaseline='alphabetic';g.fillStyle=c;g.fillText(n?cut(s,n):String(s||''),x,y)}
+function arrow(icon){g.strokeStyle=C.cyan;g.fillStyle=C.cyan;g.lineWidth=5;g.lineCap='square';g.beginPath();if(icon===8){g.arc(62,86,24,.55,5.55);g.stroke();g.beginPath();g.moveTo(39,73);g.lineTo(38,51);g.lineTo(58,59);g.fill()}else{var l=icon===2||icon===4||icon===6||icon===18,r=icon===3||icon===5||icon===7||icon===19;g.moveTo(62,126);g.lineTo(62,84);if(l)g.lineTo(icon===2||icon===18?28:35,84);else if(r)g.lineTo(icon===3||icon===19?96:89,84);else g.lineTo(62,50);g.stroke();var ex=l?(icon===2||icon===18?28:35):r?(icon===3||icon===19?96:89):62,ey=l||r?84:50;g.beginPath();if(l){g.moveTo(ex,ey);g.lineTo(ex+18,ey-12);g.lineTo(ex+18,ey+12)}else if(r){g.moveTo(ex,ey);g.lineTo(ex-18,ey-12);g.lineTo(ex-18,ey+12)}else{g.moveTo(ex,ey);g.lineTo(ex-12,ey+18);g.lineTo(ex+12,ey+18)}g.closePath();g.fill()}}
+function lightArrow(dir,x,y){g.strokeStyle=C.text;g.lineWidth=1;g.beginPath();if(dir===0){g.arc(x,y,4,0,7);g.moveTo(x-4,y);g.lineTo(x-1,y-4)}else{var ex=x,ey=y-5;if(dir===1||dir===5||dir===6){ex=x-5;ey=dir===1?y:y-5}else if(dir===2||dir===3||dir===7||dir===8){ex=x+5;ey=(dir===2||dir===3)?y:y-5}g.moveTo(x,y+4);g.lineTo(x,y);g.lineTo(ex,ey);g.moveTo(ex,ey);g.lineTo(ex+(ex>x?-2:ex<x?2:-2),ey+2);if(ex===x)g.lineTo(ex+2,ey+2);else{g.moveTo(ex,ey);g.lineTo(ex,ey+3)}}g.stroke()}
+function lights(a){a=(a||[]).slice(0,4);if(!a.length)return;var cell=Math.max(30,Math.floor(186/a.length));for(var i=0;i<a.length;i++){var z=a[i]||{},left=124+i*cell,cx=left+10,cy=134,s=Number(z.status),c=s===1?C.red:s===4?C.green:C.yellow;g.fillStyle=c;g.beginPath();g.arc(cx,cy,9,0,7);g.fill();lightArrow(Number(z.dir),cx,cy);tx(left+22,139,Math.max(0,Number(z.seconds)||0),c)}}
+function tmc(n){rr(12,169,296,8,4,null,C.border);var a=(n.tmc||{}).segments||[],total=Number((n.tmc||{}).totalDistance);if(!a.length||!(total>0))return;var colors=[rgb(0x2196),rgb(0x05e6),rgb(0xffe0),rgb(0xf8a0),rgb(0xb800),rgb(0x03ef)],sum=0;for(var i=0;i<a.length;i++)sum+=Math.max(0,Number(a[i].distance)||0);if(!(sum>0))sum=total;var cur=13;for(var j=0;j<a.length;j++){var w=Math.max(1,Math.floor(294*Math.max(0,Number(a[j].distance)||0)/sum));g.fillStyle=colors[Number(a[j].status)]||C.gray;g.fillRect(cur,170,w,6);cur+=w}var f=Math.max(0,Math.min(total,Number((n.tmc||{}).finishDistance)||0)),m=13+Math.floor(294*f/total);g.fillStyle=C.text;g.beginPath();g.moveTo(m-4,165);g.lineTo(m+4,165);g.lineTo(m,170);g.fill()}
+function lane(code,ad,left,w){var map={0:[1,0],1:[2,0],2:[3,0],3:[4,0],4:[5,0],5:[8,0],6:[6,0],7:[7,0],8:[16,0],9:[9,0],10:[17,0],11:[10,0],12:[20,0],13:[33,0],14:[33,0],15:[1,1],16:[2,2],17:[3,3],18:[4,4],19:[5,5],20:[8,8],21:[6,6],22:[7,7],23:[16,16],24:[9,9],25:[17,17],26:[10,10],27:[20,20],28:[33,33],29:[33,33],30:[3,1],31:[3,2],32:[5,1],33:[5,4],34:[6,2],35:[6,4],36:[7,1],37:[7,2],38:[7,4],39:[9,1],40:[9,8],41:[17,1],42:[17,16],43:[10,2],44:[10,8],45:[20,4],46:[20,16],47:[50,16],48:[10,8],62:[7,7],85:[33,1],89:[0,0]},q=map[code]||[1,1],d=q[0],on=q[1],cx=left+Math.floor(w/2),base=218,split=206;g.lineWidth=1;rr(left,187,w,37,5,null,ad?C.cyan:C.border);function p(bit,ex,ey){if(!(d&bit))return;g.strokeStyle=((on&bit)||ad)?C.text:C.gray;g.beginPath();g.moveTo(cx,base);g.lineTo(cx,split);g.lineTo(ex,ey);g.stroke();g.fillStyle=g.strokeStyle;g.beginPath();g.arc(ex,ey,2,0,7);g.fill()}p(1,cx,194);p(2,left+7,197);p(4,left+w-8,197);p(8,left+9,210);p(16,left+w-10,210);if(d&32){g.strokeStyle=C.gray;g.beginPath();g.moveTo(left+5,195);g.lineTo(left+w-5,195);g.stroke()}}
+function lanes(n){var a=((n.lane||{}).lanes||[]),b=((n.lane||{}).advised||[]);if(!a.length)return;var cell=Math.min(42,Math.floor(296/a.length)),start=Math.floor((320-cell*a.length)/2);for(var i=0;i<a.length;i++)lane(Number(a[i]),!!b[i],start+i*cell,cell-3)}
+function standby(a,b){g.fillStyle=C.bg;g.fillRect(0,0,320,240);rr(16,40,288,154,14,C.panel);tx(32,82,a,C.cyan);tx(32,112,b,C.text);tx(32,145,'ST7789 240x320 / ESP32-S3',C.muted)}
+function nav(n){g.fillStyle=C.bg;g.fillRect(0,0,320,240);g.fillStyle=C.head;g.fillRect(0,0,320,28);tx(12,19,n.mode==='cruise'?'CRUISE':'NAVIGATION',C.cyan);tx(102,19,n.road,C.text,29);rr(10,38,102,104,12,C.panel);arrow(Number((n.turn||{}).icon));tx(124,64,(n.turn||{}).text,C.text,26);tx(124,92,(n.turn||{}).distanceText,C.yellow);tx(124,120,(n.turn||{}).road||n.road,C.muted,26);lights(n.lights);var p=Number((n.route||{}).progressPercent);if(!(p>=0&&p<=100))p=0;rr(12,153,296,5,3,C.prog);if(p>0)rr(12,153,Math.floor(296*p/100),5,3,C.cyan);tmc(n);lanes(n);g.fillStyle=C.head;g.fillRect(0,228,320,12);var eta=((n.eta||{}).remainTimeText||'')+'  '+((n.eta||{}).remainDistanceText||'');if(Number((n.speed||{}).current)>=0)eta+='  '+Number((n.speed||{}).current)+'km/h';tx(8,239,eta,C.text,43);var ca=n.camera||{},dist=Number(ca.distance),lim=Number(ca.speedLimit)>0?Number(ca.speedLimit):Number((n.speed||{}).limit);if(dist>=0||lim>0){g.strokeStyle=C.yellow;g.strokeRect(286,151,12,12);g.beginPath();g.arc(292,157,3,0,7);g.stroke();var ct='Camera'+(dist>=0?' '+dist+'m':'')+(lim>0?'  Limit '+lim:'');tx(12,181,ct,C.yellow,38)}}
+function draw(s){var n=s.nav||{},age=Number(n.packetAgeMs),cfg=s.tft||{},stale=Number(cfg.staleMs)||3000,wait=Number(cfg.standbyMs)||10000,label=e('tftFreshness');if(!s.connected){standby('AMap ESP32','AP configuration mode');label.textContent='Wi-Fi disconnected';label.className='tft-stale'}else if(!n.active||age<0||age>wait){standby('AMap ESP32','Waiting for navigation JSON');label.textContent='waiting for navigation';label.className='tft-stale'}else if(age>stale){standby('Navigation paused','Waiting for phone data');label.textContent='phone data stale '+age+'ms';label.className='tft-stale'}else{nav(n);label.textContent='UDP live · '+age+'ms';label.className='tft-live'}}
+function poll(){fetch('/status.json',{cache:'no-store'}).then(function(r){return r.ok?r.json():null}).then(function(s){if(s&&s.developerPreview)draw(s)}).catch(function(){})}setInterval(poll,800);setTimeout(poll,200)})();</script>)TFT");
+  page += F(R"SVG(<script>(function(){
+var v=document.getElementById('tftSvg');if(!v)return;function c(n){var r=(n>>11)&31,g=(n>>5)&63,b=n&31;return'rgb('+Math.round(r*255/31)+','+Math.round(g*255/63)+','+Math.round(b*255/31)+')'}var K={b:c(0x0861),p:c(0x10a2),y:c(0x55ff),t:c(0xffff),m:c(0x9cd3),a:c(0xfea0),g:c(0x5aeb),r:c(0xd1a4),n:c(0x2589),h:c(0x0248),o:c(0x4268),q:c(0x2945)};
+function esc(s){return String(s||'').replace(/[&<>"']/g,function(x){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x]})}function cut(s,n){s=String(s||'');return s.length>n?s.substring(0,Math.max(0,n-1))+'…':s}function R(x,y,w,h,r,f,o){return'<rect x="'+x+'" y="'+y+'" width="'+w+'" height="'+h+'" rx="'+r+'" fill="'+(f||'none')+'"'+(o?' stroke="'+o+'"':'')+'/>'}function T(x,y,s,col,n){return'<text x="'+x+'" y="'+y+'" fill="'+col+'" font-family="Microsoft YaHei,Noto Sans CJK SC,sans-serif" font-size="12">'+esc(n?cut(s,n):s)+'</text>'}
+function turn(i){if(i===8)return'<path d="M62 126V110A24 24 0 1 0 38 86M38 72V51L58 59" fill="none" stroke="'+K.y+'" stroke-width="5" stroke-linecap="square" stroke-linejoin="miter"/>';var l=i===2||i===4||i===6||i===18,r=i===3||i===5||i===7||i===19,ex=l?(i===2||i===18?28:35):r?(i===3||i===19?96:89):62,ey=l||r?84:50,d='M62 126V84'+(l?'H'+ex:r?'H'+ex:'V50');var head=l?'M'+ex+' '+ey+'l18 -12v24z':r?'M'+ex+' '+ey+'l-18 -12v24z':'M62 50l-12 18h24z';return'<path d="'+d+'" fill="none" stroke="'+K.y+'" stroke-width="5" stroke-linecap="square"/><path d="'+head+'" fill="'+K.y+'"/>'}
+function larr(a){a=(a||[]).slice(0,4);if(!a.length)return'';var z='',w=Math.max(30,Math.floor(186/a.length));for(var i=0;i<a.length;i++){var q=a[i]||{},x=124+i*w+10,y=134,s=Number(q.status),co=s===1?K.r:s===4?K.n:K.a,d=Number(q.dir),ex=x,ey=y-5;if(d===1||d===5||d===6){ex=x-5;ey=d===1?y:y-5}else if(d===2||d===3||d===7||d===8){ex=x+5;ey=(d===2||d===3)?y:y-5}var ar=d===0?'<circle cx="'+x+'" cy="'+y+'" r="4" fill="none" stroke="'+K.t+'"/><path d="M'+(x-4)+' '+y+'l3 -4" stroke="'+K.t+'" fill="none"/>':'<path d="M'+x+' '+(y+4)+'V'+y+'L'+ex+' '+ey+' M'+ex+' '+ey+'l'+(ex>x?-2:ex<x?2:-2)+' 2" stroke="'+K.t+'" fill="none"/>';z+='<circle cx="'+x+'" cy="'+y+'" r="9" fill="'+co+'"/>'+ar+T(x+12,y+5,Math.max(0,Number(q.seconds)||0),co)}return z}
+var M={0:[1,0],1:[2,0],2:[3,0],3:[4,0],4:[5,0],5:[8,0],6:[6,0],7:[7,0],8:[16,0],9:[9,0],10:[17,0],11:[10,0],12:[20,0],13:[33,0],14:[33,0],15:[1,1],16:[2,2],17:[3,3],18:[4,4],19:[5,5],20:[8,8],21:[6,6],22:[7,7],23:[16,16],24:[9,9],25:[17,17],26:[10,10],27:[20,20],28:[33,33],29:[33,33],30:[3,1],31:[3,2],32:[5,1],33:[5,4],34:[6,2],35:[6,4],36:[7,1],37:[7,2],38:[7,4],39:[9,1],40:[9,8],41:[17,1],42:[17,16],43:[10,2],44:[10,8],45:[20,4],46:[20,16],47:[50,16],48:[10,8],62:[7,7],85:[33,1],89:[0,0]};
+function lanes(n){var a=((n.lane||{}).lanes||[]),b=((n.lane||{}).advised||[]);if(!a.length)return'';var z='',w=Math.min(42,Math.floor(296/a.length)),st=Math.floor((320-w*a.length)/2);for(var i=0;i<a.length;i++){var q=M[Number(a[i])]||[1,1],d=q[0],on=q[1],left=st+i*w,cx=left+Math.floor((w-3)/2),ww=w-3,ad=!!b[i],edge=ad?K.y:K.o;z+=R(left,187,ww,37,5,null,edge);function p(bit,ex,ey){if(!(d&bit))return;var co=((on&bit)||ad)?K.t:K.g;z+='<path d="M'+cx+' 218V206L'+ex+' '+ey+'" stroke="'+co+'" fill="none"/><circle cx="'+ex+'" cy="'+ey+'" r="2" fill="'+co+'"/>'}p(1,cx,194);p(2,left+7,197);p(4,left+ww-8,197);p(8,left+9,210);p(16,left+ww-10,210);if(d&32)z+='<path d="M'+(left+5)+' 195H'+(left+ww-5)+'" stroke="'+K.g+'"/>'}return z}
+function tmc(n){var a=(n.tmc||{}).segments||[],total=Number((n.tmc||{}).totalDistance),z=R(12,169,296,8,4,null,K.o);if(!a.length||!(total>0))return z;var cols=[c(0x2196),c(0x05e6),c(0xffe0),c(0xf8a0),c(0xb800),c(0x03ef)],sum=0;for(var i=0;i<a.length;i++)sum+=Math.max(0,Number(a[i].distance)||0);if(!(sum>0))sum=total;var cur=13;for(var j=0;j<a.length;j++){var w=Math.max(1,Math.floor(294*Math.max(0,Number(a[j].distance)||0)/sum));z+='<rect x="'+cur+'" y="170" width="'+w+'" height="6" fill="'+(cols[Number(a[j].status)]||K.g)+'"/>';cur+=w}var f=Math.max(0,Math.min(total,Number((n.tmc||{}).finishDistance)||0)),m=13+Math.floor(294*f/total);return z+'<path d="M'+(m-4)+' 165H'+(m+4)+'L'+m+' 170z" fill="'+K.t+'"/>'}
+function standby(a,b){v.innerHTML='<rect width="320" height="240" fill="'+K.b+'"/>'+R(16,40,288,154,14,K.p)+T(32,82,a,K.y)+T(32,112,b,K.t)+T(32,145,'ST7789 240x320 / ESP32-S3',K.m)}
+function nav(n){var z='<rect width="320" height="240" fill="'+K.b+'"/><rect width="320" height="28" fill="'+K.h+'"/>'+T(12,19,n.mode==='cruise'?'CRUISE':'NAVIGATION',K.y)+T(102,19,n.road,K.t,29)+R(10,38,102,104,12,K.p)+turn(Number((n.turn||{}).icon))+T(124,64,(n.turn||{}).text,K.t,26)+T(124,92,(n.turn||{}).distanceText,K.a)+T(124,120,(n.turn||{}).road||n.road,K.m,26)+larr(n.lights);var p=Number((n.route||{}).progressPercent);if(!(p>=0&&p<=100))p=0;z+=R(12,153,296,5,3,K.q)+(p>0?R(12,153,Math.floor(296*p/100),5,3,K.y):'')+tmc(n)+lanes(n)+'<rect x="0" y="228" width="320" height="12" fill="'+K.h+'"/>';var eta=((n.eta||{}).remainTimeText||'')+'  '+((n.eta||{}).remainDistanceText||'');if(Number((n.speed||{}).current)>=0)eta+='  '+Number((n.speed||{}).current)+'km/h';z+=T(8,239,eta,K.t,43);var ca=n.camera||{},dist=Number(ca.distance),lim=Number(ca.speedLimit)>0?Number(ca.speedLimit):Number((n.speed||{}).limit);if(dist>=0||lim>0){z+='<rect x="286" y="151" width="12" height="12" fill="none" stroke="'+K.a+'"/><circle cx="292" cy="157" r="3" fill="none" stroke="'+K.a+'"/>';z+=T(12,181,'Camera'+(dist>=0?' '+dist+'m':'')+(lim>0?'  Limit '+lim:''),K.a,38)}v.innerHTML=z}
+function paint(s){var n=s.nav||{},age=Number(n.packetAgeMs),q=s.tft||{},stale=Number(q.staleMs)||3000,wait=Number(q.standbyMs)||10000,l=document.getElementById('tftFreshness');if(!s.connected){standby('AMap ESP32','AP configuration mode');l.textContent='Wi-Fi disconnected';l.className='tft-stale'}else if(!n.active||age<0||age>wait){standby('AMap ESP32','Waiting for navigation JSON');l.textContent='waiting for navigation';l.className='tft-stale'}else if(age>stale){standby('Navigation paused','Waiting for phone data');l.textContent='phone data stale '+age+'ms';l.className='tft-stale'}else{nav(n);l.textContent='UDP live · '+age+'ms';l.className='tft-live'}}
+function poll(){fetch('/status.json',{cache:'no-store'}).then(function(r){return r.ok?r.json():null}).then(function(s){if(s&&s.developerPreview)paint(s)}).catch(function(){})}setInterval(poll,800);setTimeout(poll,50)})();</script>)SVG");
+#endif
   page += F("</main></body></html>");
   return page;
 }
@@ -685,6 +731,8 @@ String NetworkManager::buildStatusJson() const {
   json += ",\"lastError\":\"" + jsonEscape(lastError) + "\"";
   json += ",\"developerPreview\":";
   json += developerPreviewEnabled ? "true" : "false";
+  json += ",\"tft\":{\"width\":320,\"height\":240,\"staleMs\":" + String(AMAP_STALE_MS);
+  json += ",\"standbyMs\":" + String(AMAP_STANDBY_MS) + "}";
   json += ",\"nav\":";
   json += buildNavigationJson();
   if (otaManager) {
@@ -709,10 +757,17 @@ String NetworkManager::buildNavigationJson() const {
   }
 
   String lightText;
-  if (state.lightCount > 0) {
-    const LightState& light = state.lights[0];
-    const char* color = light.status == 1 ? "红灯" : (light.status == 4 ? "绿灯" : "黄灯");
-    lightText = String(color) + " " + String(light.seconds) + "s";
+  for (uint8_t i = 0; i < state.lightCount; ++i) {
+    const LightState& light = state.lights[i];
+    if (!lightText.isEmpty()) {
+      lightText += "  ";
+    }
+    const char* direction = light.dir == 0 ? "掉头" :
+                            light.dir == 1 ? "左" :
+                            (light.dir == 2 || light.dir == 3) ? "右" :
+                            light.dir == 4 ? "直" : "";
+    const char* color = light.status == 1 ? "红" : (light.status == 4 ? "绿" : "黄");
+    lightText += String(direction) + color + " " + String(light.seconds) + "s";
   }
 
   String json;
@@ -732,6 +787,28 @@ String NetworkManager::buildNavigationJson() const {
   json += ",\"remainTimeText\":\"" + jsonEscape(state.eta.remainTimeText) + "\"}";
   json += ",\"speed\":{\"current\":" + String(state.speed.current);
   json += ",\"limit\":" + String(state.speed.limit) + "}";
+  json += ",\"camera\":{\"type\":" + String(state.camera.type);
+  json += ",\"distance\":" + String(state.camera.distance);
+  json += ",\"speedLimit\":" + String(state.camera.speedLimit) + "}";
+  json += ",\"lane\":{\"lanes\":[";
+  for (uint8_t i = 0; i < state.lane.count; ++i) {
+    if (i > 0) json += ",";
+    json += String(state.lane.lanes[i]);
+  }
+  json += "],\"advised\":[";
+  for (uint8_t i = 0; i < state.lane.count; ++i) {
+    if (i > 0) json += ",";
+    json += state.lane.advised[i] ? "true" : "false";
+  }
+  json += "]}";
+  json += ",\"lights\":[";
+  for (uint8_t i = 0; i < state.lightCount; ++i) {
+    if (i > 0) json += ",";
+    json += "{\"dir\":" + String(state.lights[i].dir);
+    json += ",\"status\":" + String(state.lights[i].status);
+    json += ",\"seconds\":" + String(state.lights[i].seconds) + "}";
+  }
+  json += "]";
   json += ",\"tmc\":{\"totalDistance\":" + String(state.tmc.totalDistance);
   json += ",\"finishDistance\":" + String(state.tmc.finishDistance);
   json += ",\"segments\":[";
@@ -758,6 +835,8 @@ String NetworkManager::buildNavigationJson() const {
   json += ",\"laneText\":\"" + jsonEscape(laneText) + "\"";
   json += ",\"lightText\":\"" + jsonEscape(lightText) + "\"";
   json += ",\"alert\":\"" + jsonEscape(state.alert) + "\"";
+  json += ",\"packetAgeMs\":";
+  json += state.lastPacketAt == 0 ? String(-1) : String(millis() - state.lastPacketAt);
   json += "}";
   return json;
 }

@@ -65,7 +65,11 @@
 
 // Display profile. The current renderer stays on the I2C OLED; the shared
 // NavState protocol and web simulator are already sized for the future SPI
-// TFT dashboard. Set these pin values when the exact TFT module is chosen.
+// TFT dashboard. The selected 2.8-inch ST7789 module is 240x320 physical
+// pixels and is normally used in 320x240 landscape (rotation 1). Its adapter
+// exposes VCC, GND, CS, RESET, DC, MOSI, SCK, LED and optional MISO; no touch
+// pins are needed for the no-touch module. This S3 mapping avoids the USB
+// pins, bootstrapping pins and the OLED's GPIO8/GPIO9 I2C bus.
 #define AMAP_DISPLAY_PROFILE_OLED 1
 #define AMAP_DISPLAY_PROFILE_TFT 2
 #ifndef AMAP_DISPLAY_PROFILE
@@ -80,13 +84,13 @@
 #define AMAP_TFT_WIDTH 320
 #define AMAP_TFT_HEIGHT 240
 #define AMAP_TFT_ROTATION 1
-#define AMAP_TFT_SCLK_PIN -1
-#define AMAP_TFT_MOSI_PIN -1
-#define AMAP_TFT_MISO_PIN -1
-#define AMAP_TFT_CS_PIN -1
-#define AMAP_TFT_DC_PIN -1
-#define AMAP_TFT_RST_PIN -1
-#define AMAP_TFT_BL_PIN -1
+#define AMAP_TFT_SCLK_PIN 12
+#define AMAP_TFT_MOSI_PIN 11
+#define AMAP_TFT_MISO_PIN 13
+#define AMAP_TFT_CS_PIN 10
+#define AMAP_TFT_DC_PIN 14
+#define AMAP_TFT_RST_PIN 15
+#define AMAP_TFT_BL_PIN 16
 
 // 1 enables a U8g2 CJK-capable font for Chinese roads/labels. Set to 0 if
 // firmware size is tight or your display only needs ASCII.

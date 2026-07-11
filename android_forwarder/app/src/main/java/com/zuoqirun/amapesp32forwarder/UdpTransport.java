@@ -35,6 +35,25 @@ final class UdpTransport implements Esp32Transport {
 
     @Override
     public synchronized void send(byte[] payload) throws IOException {
+        IOException firstError;
+        try {
+            sendOnce(payload);
+            return;
+        } catch (IOException error) {
+            firstError = error;
+            stop();
+        }
+
+        try {
+            sendOnce(payload);
+        } catch (IOException retryError) {
+            stop();
+            retryError.addSuppressed(firstError);
+            throw retryError;
+        }
+    }
+
+    private void sendOnce(byte[] payload) throws IOException {
         start();
         DatagramPacket packet = new DatagramPacket(payload, payload.length, address, port);
         socket.send(packet);

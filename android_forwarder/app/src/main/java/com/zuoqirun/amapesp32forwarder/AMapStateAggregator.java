@@ -3,6 +3,7 @@ package com.zuoqirun.amapesp32forwarder;
 import android.content.Intent;
 import android.os.Bundle;
 import android.text.TextUtils;
+import android.util.Log;
 
 import org.json.JSONObject;
 
@@ -11,6 +12,7 @@ import java.util.List;
 import java.util.Locale;
 
 final class AMapStateAggregator {
+    private static final String TAG = "AmapEsp32";
     private static final long ALERT_TTL_MS = 5200L;
 
     private final Esp32NavState state = new Esp32NavState();
@@ -77,7 +79,7 @@ final class AMapStateAggregator {
         } else if (keyType == AMapConstants.KEY_TYPE_NAVIGATION_STATE && navState == AMapConstants.NAV_STATE_CRUISE_EXIT) {
             clearNavigation();
             setMode("standby", false);
-        } else if (keyType == AMapConstants.KEY_TYPE_NAVIGATION_STATE && navState == AMapConstants.NAV_STATE_NAVIGATING) {
+        } else if (keyType == AMapConstants.KEY_TYPE_NAVIGATION_STATE && isNavigationState(navState)) {
             setMode("nav", true);
         } else if (keyType == AMapConstants.KEY_TYPE_NAVIGATION_STATE && navState == AMapConstants.NAV_STATE_NAV_EXIT) {
             clearNavigation();
@@ -307,6 +309,19 @@ final class AMapStateAggregator {
         if (!result.handled) {
             return;
         }
+        if (BuildConfig.DEBUG) {
+            StringBuilder parsed = new StringBuilder();
+            for (Esp32NavState.Light light : result.lights) {
+                if (parsed.length() > 0) {
+                    parsed.append(' ');
+                }
+                parsed.append("dir=").append(light.dir)
+                        .append("/status=").append(light.status)
+                        .append("/seconds=").append(light.seconds);
+            }
+            Log.d(TAG, "Traffic parsed clear=" + result.clear
+                    + " count=" + result.lights.size() + " lights=[" + parsed + "]");
+        }
         if (result.clear) {
             state.lights.clear();
             return;
@@ -405,6 +420,14 @@ final class AMapStateAggregator {
 
     private static boolean isTrafficLightAction(String action) {
         return action != null && action.toLowerCase(Locale.US).contains("traffic_light");
+    }
+
+    private static boolean isNavigationState(int state) {
+        return state == AMapConstants.NAV_STATE_NAVIGATING
+                || state == AMapConstants.NAV_STATE_SIMULATING
+                || state == AMapConstants.NAV_STATE_SIMULATING_ALT
+                || state == AMapConstants.NAV_STATE_NAVIGATING_ALT_10
+                || state == AMapConstants.NAV_STATE_NAVIGATING_ALT_11;
     }
 
     private static int turnIconToTrafficDir(int icon) {

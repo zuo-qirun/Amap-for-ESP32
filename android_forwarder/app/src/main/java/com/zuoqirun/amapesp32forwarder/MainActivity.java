@@ -8,8 +8,11 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
+import android.provider.Settings;
 import android.text.InputType;
 import android.text.TextUtils;
+import android.net.Uri;
 import android.view.Gravity;
 import android.view.ViewGroup;
 import android.widget.ArrayAdapter;
@@ -155,6 +158,7 @@ public final class MainActivity extends Activity {
         saveSettings();
         AppSettings.setEnabled(this, isChecked);
         if (isChecked) {
+            requestBatteryExemption();
             startForwarder(ForwarderService.ACTION_START);
         } else {
             startForwarder(ForwarderService.ACTION_STOP);
@@ -171,7 +175,25 @@ public final class MainActivity extends Activity {
         enableSwitch.setChecked(enabled);
         loadingSettings = false;
         if (enabled) {
+            requestBatteryExemption();
             startForwarder(ForwarderService.ACTION_START);
+        }
+    }
+
+    private void requestBatteryExemption() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return;
+        }
+        try {
+            PowerManager power = (PowerManager) getSystemService(POWER_SERVICE);
+            if (power != null && !power.isIgnoringBatteryOptimizations(getPackageName())) {
+                Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        Uri.parse("package:" + getPackageName()));
+                startActivity(intent);
+            }
+        } catch (Throwable ignored) {
+            // Some vendor ROMs block the standard request. The service remains
+            // usable, but the user must then allow background activity manually.
         }
     }
 

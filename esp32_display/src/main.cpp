@@ -3,6 +3,7 @@
 
 #include "Config.h"
 #include "DisplayRenderer.h"
+#include "TftRenderer.h"
 #include "NavState.h"
 #include "NetworkManager.h"
 #include "OtaManager.h"
@@ -11,13 +12,18 @@
 NetworkManager network;
 OtaManager ota;
 ProtocolParser parser;
+#if AMAP_DISPLAY_PROFILE == AMAP_DISPLAY_PROFILE_TFT
+TftRenderer display;
+#else
 DisplayRenderer display;
+#endif
 NavState navState;
 
 char packetBuffer[AMAP_PACKET_BUFFER_SIZE];
 unsigned long lastRenderAt = 0;
 unsigned long lastStatusLogAt = 0;
-bool oledReady = false;
+String lastStatusText;
+bool displayReady = false;
 
 void scanI2CBus() {
   Serial.printf("I2C scan on SDA=%u SCL=%u, OLED addr8=0x%02X addr7=0x%02X\n",
@@ -47,15 +53,19 @@ void setup() {
 
   navState.reset();
   display.begin();
-  oledReady = true;
+#if AMAP_DISPLAY_PROFILE == AMAP_DISPLAY_PROFILE_TFT
+  displayReady = display.isReady();
+#else
+  displayReady = true;
   scanI2CBus();
+#endif
   ota.begin();
   network.begin(&ota, &navState);
 }
 
 void loop() {
   network.update();
-  ota.update(network.isConnected(), network.isWebReady(), oledReady);
+  ota.update(network.isConnected(), network.isWebReady(), displayReady);
 
   IPAddress remoteIp;
   uint16_t remotePort = 0;
@@ -63,14 +73,19 @@ void loop() {
   if (length > 0) {
     String error;
     if (parser.parse(packetBuffer, static_cast<size_t>(length), navState, error)) {
-      Serial.printf("UDP %s:%u seq=%lu mode=%s road=%s turn=%s dist=%s\n",
+      Serial.printf("UDP %s:%u length=%d seq=%lu mode=%s active=%s lightCount=%u\n",
                     remoteIp.toString().c_str(),
                     remotePort,
+                    length,
                     static_cast<unsigned long>(navState.seq),
                     navState.mode.c_str(),
-                    navState.road.c_str(),
-                    navState.turn.text.c_str(),
-                    navState.turn.distanceText.c_str());
+                    navState.active ? "true" : "false",
+                    navState.lightCount);
+      for (uint8_t i = 0; i < navState.lightCount; ++i) {
+        const LightState& light = navState.lights[i];
+        Serial.printf("  light[%u] dir=%d status=%d seconds=%d\n",
+                      i, light.dir, light.status, light.seconds);
+      }
     } else {
       Serial.printf("JSON parse failed: %s\n", error.c_str());
     }
@@ -83,10 +98,12 @@ void loop() {
     display.render(navState, network.isConnected(), network.ipString(), AMAP_UDP_PORT, silenceMs);
   }
 
-  if (now - lastStatusLogAt >= 2000UL) {
+  String statusText = network.statusText();
+  if (statusText != lastStatusText || now - lastStatusLogAt >= 30000UL) {
     lastStatusLogAt = now;
+    lastStatusText = statusText;
     Serial.printf("status=%s udp=%u lastPacket=%lu ms\n",
-                  network.statusText().c_str(),
+                  statusText.c_str(),
                   AMAP_UDP_PORT,
                   navState.lastPacketAt == 0 ? 0UL : now - navState.lastPacketAt);
   }

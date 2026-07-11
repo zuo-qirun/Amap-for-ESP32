@@ -2,12 +2,15 @@ package com.zuoqirun.amapesp32forwarder;
 
 import android.content.Context;
 import android.text.TextUtils;
+import android.util.Log;
 
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 
 final class Esp32UdpForwarder {
+    private static final String TAG = "AmapEsp32";
     private static final long MIN_INTERVAL_MS = 120L;
 
     private final Context appContext;
@@ -41,7 +44,7 @@ final class Esp32UdpForwarder {
         executor.execute(() -> doSend(snapshot));
     }
 
-    void stop() {
+    synchronized void stop() {
         if (transport != null) {
             transport.stop();
             transport = null;
@@ -56,15 +59,30 @@ final class Esp32UdpForwarder {
     private void doSend(Esp32NavState snapshot) {
         try {
             Esp32Transport target = ensureTransport();
-            byte[] payload = Esp32Protocol.encode(snapshot, seq.getAndIncrement());
+            long packetSeq = seq.getAndIncrement();
+            byte[] payload = Esp32Protocol.encode(snapshot, packetSeq);
             target.send(payload);
+            if (BuildConfig.DEBUG) {
+                Log.d(TAG, "UDP JSON seq=" + packetSeq + " "
+                        + new String(payload, StandardCharsets.UTF_8));
+            }
             AppSettings.noteSent(appContext, payload.length);
         } catch (Throwable t) {
+            resetTransport();
             AppSettings.noteError(appContext, readableError(t));
+            Log.w(TAG, "UDP send failed; transport reset for next heartbeat", t);
         }
     }
 
-    private Esp32Transport ensureTransport() throws Exception {
+    private synchronized void resetTransport() {
+        if (transport != null) {
+            transport.stop();
+            transport = null;
+        }
+        transportKey = "";
+    }
+
+    private synchronized Esp32Transport ensureTransport() throws Exception {
         String mode = AppSettings.getTransport(appContext);
         String key = mode + ":" + AppSettings.getEsp32Ip(appContext) + ":" + AppSettings.getUdpPort(appContext);
         if (transport != null && TextUtils.equals(key, transportKey)) {

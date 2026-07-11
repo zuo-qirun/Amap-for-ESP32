@@ -3,6 +3,7 @@
 #include <U8g2lib.h>
 #include <Wire.h>
 #include "Config.h"
+#include "NavigationIcons.h"
 
 #if AMAP_OLED_DRIVER == AMAP_OLED_DRIVER_SH1106_12864
 static U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
@@ -71,11 +72,12 @@ void DisplayRenderer::renderNav(const NavState& state, unsigned long silenceMs) 
   drawClipped(0, yTop, width, modeLabel(state.mode) + " " + state.road);
 
   setTextFont();
-  String turnLine = turnArrow(state.turn.icon) + state.turn.text;
+  drawTurnIcon(state.turn.icon, 0, yTurn - 13);
+  String turnLine = state.turn.text;
   if (!state.turn.distanceText.isEmpty()) {
     turnLine += " " + state.turn.distanceText;
   }
-  drawClipped(0, yTurn, width, turnLine);
+  drawClipped(19, yTurn, width - 19, turnLine);
 
   String next = state.turn.road.isEmpty() ? state.road : state.turn.road;
   drawClipped(0, yNext, width, next);
@@ -95,7 +97,11 @@ void DisplayRenderer::renderNav(const NavState& state, unsigned long silenceMs) 
   String bottom = bottomText(state);
   if (!bottom.isEmpty()) {
     setSmallFont();
-    drawClipped(0, yBottom, width, bottom);
+    bool showingCamera = !cameraText(state).isEmpty() && bottom == cameraText(state);
+    if (showingCamera) {
+      drawCameraIcon(state.camera.type, 0, yBottom - 11);
+    }
+    drawClipped(showingCamera ? 14 : 0, yBottom, width - (showingCamera ? 14 : 0), bottom);
   }
 
   if (tall) {
@@ -132,6 +138,16 @@ void DisplayRenderer::drawClipped(int x, int y, int maxWidth, const String& text
   u8g2.drawUTF8(x, y, clipped(text, maxWidth).c_str());
 }
 
+void DisplayRenderer::drawTurnIcon(int icon, int x, int y) {
+  const NavigationIcons::Bitmap& bitmap = NavigationIcons::turnBitmap(icon);
+  u8g2.drawXBMP(x, y, bitmap.width, bitmap.height, bitmap.data);
+}
+
+void DisplayRenderer::drawCameraIcon(int type, int x, int y) {
+  const NavigationIcons::Bitmap& bitmap = NavigationIcons::cameraBitmap(type);
+  u8g2.drawXBMP(x, y, bitmap.width, bitmap.height, bitmap.data);
+}
+
 String DisplayRenderer::clipped(String text, int maxWidth) {
   if (maxWidth <= 0) {
     return "";
@@ -154,25 +170,6 @@ String DisplayRenderer::modeLabel(const String& mode) const {
     return "CRU";
   }
   return "STBY";
-}
-
-String DisplayRenderer::turnArrow(int icon) const {
-  switch (icon) {
-    case 2:
-    case 4:
-    case 6:
-    case 18:
-      return "< ";
-    case 3:
-    case 5:
-    case 7:
-    case 19:
-      return "> ";
-    case 8:
-      return "U ";
-    default:
-      return "^ ";
-  }
 }
 
 String DisplayRenderer::laneText(const NavState& state) const {
@@ -199,9 +196,35 @@ String DisplayRenderer::lightText(const NavState& state) const {
   if (state.lightCount == 0) {
     return "";
   }
-  const LightState& light = state.lights[0];
-  String color = light.status == 1 ? "红灯" : (light.status == 4 ? "绿灯" : "黄灯");
-  return color + " " + String(light.seconds) + "s";
+  const uint8_t count = min(state.lightCount, NavState::MAX_LIGHTS);
+  const uint8_t pageCount = (count + 1) / 2;
+  const uint8_t start = ((millis() / 2500UL) % pageCount) * 2;
+  const uint8_t end = min(static_cast<uint8_t>(start + 2), count);
+  String out;
+  for (uint8_t i = start; i < end; ++i) {
+    const LightState& light = state.lights[i];
+    if (!out.isEmpty()) {
+      out += " ";
+    }
+#if AMAP_USE_CHINESE_FONT
+    const char* direction = light.dir == 0 ? "掉" :
+                            light.dir == 1 ? "左" :
+                            (light.dir == 2 || light.dir == 3) ? "右" :
+                            light.dir == 4 ? "直" :
+                            (light.dir == 5 || light.dir == 6) ? "左前" : "右前";
+    const char* color = light.status == 1 ? "红" : (light.status == 4 ? "绿" : "黄");
+    out += String(direction) + color + String(light.seconds);
+#else
+    const char* direction = light.dir == 0 ? "U" :
+                            light.dir == 1 ? "L" :
+                            (light.dir == 2 || light.dir == 3) ? "R" :
+                            light.dir == 4 ? "S" :
+                            (light.dir == 5 || light.dir == 6) ? "\\" : "/";
+    const char* color = light.status == 1 ? "R" : (light.status == 4 ? "G" : "Y");
+    out += String(direction) + ":" + color + String(light.seconds);
+#endif
+  }
+  return out;
 }
 
 String DisplayRenderer::cameraText(const NavState& state) const {
@@ -290,8 +313,13 @@ String DisplayRenderer::roadInfoText(const NavState& state) const {
 }
 
 String DisplayRenderer::bottomText(const NavState& state) const {
+  // Countdown information is time-critical. Keep it pinned instead of hiding
+  // it in the rotating secondary-info carousel while a light is active.
+  if (state.lightCount > 0) {
+    return lightText(state);
+  }
   String slots[9] = {
-      lightText(state),
+      "",
       cameraText(state),
       tmcText(state),
       laneText(state),

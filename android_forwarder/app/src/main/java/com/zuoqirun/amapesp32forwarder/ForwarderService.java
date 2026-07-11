@@ -8,17 +8,26 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.PowerManager;
+import android.util.Log;
+import android.net.wifi.WifiManager;
 
 public final class ForwarderService extends Service implements AMapBroadcastReceiver.Listener {
     static final String ACTION_START = "com.zuoqirun.amapesp32forwarder.START";
     static final String ACTION_STOP = "com.zuoqirun.amapesp32forwarder.STOP";
     static final String ACTION_SEND_TEST = "com.zuoqirun.amapesp32forwarder.SEND_TEST";
 
-    private static final String CHANNEL_ID = "amap_esp32_forwarder";
+    private static final String CHANNEL_ID = "amap_esp32_forwarder_live";
     private static final int NOTIFICATION_ID = 4210;
+    private static final String TAG = "AMapEsp32Forwarder";
+    // AMap Auto replies to an ACTION_RECV query with a snapshot addressed to
+    // the querying package.  Passive broadcasts alone omit cruise-light data
+    // on several head-unit builds.
+    private static final String AMAP_AUTO_PACKAGE = "com.autonavi.amapauto";
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable heartbeat = new Runnable() {
@@ -31,9 +40,21 @@ public final class ForwarderService extends Service implements AMapBroadcastRece
         }
     };
 
+    private final Runnable amapPoll = new Runnable() {
+        @Override
+        public void run() {
+            if (AppSettings.isEnabled(ForwarderService.this)) {
+                requestAmapSnapshots(false);
+                handler.postDelayed(this, 6000L);
+            }
+        }
+    };
+
     private AMapBroadcastReceiver receiver;
     private AMapStateAggregator aggregator;
     private Esp32UdpForwarder forwarder;
+    private PowerManager.WakeLock wakeLock;
+    private WifiManager.WifiLock wifiLock;
 
     @Override
     public void onCreate() {
@@ -41,6 +62,7 @@ public final class ForwarderService extends Service implements AMapBroadcastRece
         aggregator = new AMapStateAggregator();
         forwarder = new Esp32UdpForwarder(this);
         startForeground(NOTIFICATION_ID, buildNotification());
+        acquireBackgroundLocks();
         registerAmapReceiver();
     }
 
@@ -61,6 +83,9 @@ public final class ForwarderService extends Service implements AMapBroadcastRece
         }
         handler.removeCallbacks(heartbeat);
         handler.post(heartbeat);
+        handler.removeCallbacks(amapPoll);
+        requestAmapSnapshots(true);
+        handler.postDelayed(amapPoll, 6000L);
         return START_STICKY;
     }
 
@@ -76,6 +101,7 @@ public final class ForwarderService extends Service implements AMapBroadcastRece
         if (forwarder != null) {
             forwarder.shutdown();
         }
+        releaseBackgroundLocks();
         super.onDestroy();
     }
 
@@ -87,8 +113,23 @@ public final class ForwarderService extends Service implements AMapBroadcastRece
     @Override
     public void onAmapBroadcast(Intent intent) {
         AppSettings.noteBroadcast(this);
+        String action = intent == null ? "" : intent.getAction();
+        if (intent != null && (action != null && action.toLowerCase().contains("traffic_light")
+                || TrafficLightParser.hasTrafficLightPayload(intent.getExtras()))) {
+            Bundle extras = intent.getExtras();
+            if (BuildConfig.DEBUG) {
+                Log.d(TAG, "Traffic input action=" + action
+                        + " KEY_TYPE=" + BundleReaders.intValue(extras, -1, "KEY_TYPE", "keyType")
+                        + " lightsData=" + String.valueOf(BundleReaders.safeExtra(extras, "lightsData"))
+                        + " lightsCount=" + BundleReaders.intValue(extras, -1, "lightsCount", "LIGHTS_COUNT")
+                        + " clearLights=" + BundleReaders.booleanValue(extras, false,
+                        "clearLights", "EXTRA_CLEAR_LIGHTS")
+                        + " fields=" + (extras == null ? "[]" : extras.keySet()));
+            }
+        }
+        boolean forceClear = intent != null && TrafficLightParser.isClearPayload(intent.getExtras());
         Esp32NavState snapshot = aggregator.handleIntent(intent);
-        forwarder.send(snapshot, false);
+        forwarder.send(snapshot, forceClear);
     }
 
     private void registerAmapReceiver() {
@@ -100,13 +141,79 @@ public final class ForwarderService extends Service implements AMapBroadcastRece
         }
     }
 
+    private void requestAmapSnapshots(boolean includeExit) {
+        requestAmapSnapshot(AMapConstants.KEY_TYPE_REQUEST_LANE, 0);
+        requestAmapSnapshot(AMapConstants.KEY_TYPE_TRAFFIC_LIGHT, 0);
+        requestAmapSnapshot(AMapConstants.KEY_TYPE_TMC, 0);
+        if (includeExit) {
+            requestAmapSnapshot(AMapConstants.KEY_TYPE_EXIT_INFO, 1);
+        }
+    }
+
+    private void requestAmapSnapshot(int keyType, int exitInfoType) {
+        try {
+            Intent request = new Intent(AMapConstants.ACTION_RECV);
+            request.setPackage(AMAP_AUTO_PACKAGE);
+            request.putExtra("KEY_TYPE", keyType);
+            if (exitInfoType != 0) {
+                request.putExtra("EXIT_INFO_TYPE", exitInfoType);
+            }
+            sendBroadcast(request);
+            Log.d(TAG, "request AMap snapshot KEY_TYPE=" + keyType);
+        } catch (Throwable error) {
+            Log.w(TAG, "request AMap snapshot failed KEY_TYPE=" + keyType, error);
+        }
+    }
+
+    private void acquireBackgroundLocks() {
+        try {
+            PowerManager power = (PowerManager) getSystemService(POWER_SERVICE);
+            if (power != null) {
+                wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,
+                        getPackageName() + ":forwarder");
+                wakeLock.setReferenceCounted(false);
+                wakeLock.acquire();
+            }
+        } catch (Throwable error) {
+            Log.w(TAG, "Unable to acquire CPU wake lock", error);
+        }
+        try {
+            WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
+            if (wifi != null) {
+                wifiLock = wifi.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+                        getPackageName() + ":udp");
+                wifiLock.setReferenceCounted(false);
+                wifiLock.acquire();
+            }
+        } catch (Throwable error) {
+            Log.w(TAG, "Unable to acquire Wi-Fi lock", error);
+        }
+    }
+
+    private void releaseBackgroundLocks() {
+        try {
+            if (wifiLock != null && wifiLock.isHeld()) {
+                wifiLock.release();
+            }
+        } catch (Throwable ignored) {
+        }
+        wifiLock = null;
+        try {
+            if (wakeLock != null && wakeLock.isHeld()) {
+                wakeLock.release();
+            }
+        } catch (Throwable ignored) {
+        }
+        wakeLock = null;
+    }
+
     private Notification buildNotification() {
         NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && manager != null) {
             NotificationChannel channel = new NotificationChannel(
                     CHANNEL_ID,
                     "AMap ESP32 Forwarder",
-                    NotificationManager.IMPORTANCE_LOW);
+                NotificationManager.IMPORTANCE_DEFAULT);
             channel.setDescription("Forward AMap Auto navigation state to ESP32 over UDP.");
             manager.createNotificationChannel(channel);
         }

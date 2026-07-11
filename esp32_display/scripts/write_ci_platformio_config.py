@@ -12,7 +12,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate a PlatformIO config for CI firmware metadata.")
     parser.add_argument("--base", default="platformio.ini", type=Path)
     parser.add_argument("--out", default="platformio-ci.ini", type=Path)
-    parser.add_argument("--env", default="esp32-s3-devkitm-1")
+    parser.add_argument("--env", default="esp32-s3-n16r8")
     parser.add_argument("--version", required=True)
     parser.add_argument("--build-number", required=True, type=int)
     parser.add_argument("--channel", required=True, choices=["dev", "stable"])

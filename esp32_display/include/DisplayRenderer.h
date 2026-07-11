@@ -17,9 +17,10 @@ private:
   void setSmallFont();
   void setLargeFont();
   void drawClipped(int x, int y, int maxWidth, const String& text);
+  void drawTurnIcon(int icon, int x, int y);
+  void drawCameraIcon(int type, int x, int y);
   String clipped(String text, int maxWidth);
   String modeLabel(const String& mode) const;
-  String turnArrow(int icon) const;
   String laneText(const NavState& state) const;
   String lightText(const NavState& state) const;
   String cameraText(const NavState& state) const;

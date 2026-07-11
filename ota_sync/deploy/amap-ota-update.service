@@ -1,0 +1,23 @@
+[Unit]
+Description=AMap ESP32 OTA update server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/amap-ota-update-server
+Environment=HOST=0.0.0.0
+Environment=PORT=8788
+Environment=GITHUB_REPO=zuo-qirun/Amap-for-ESP32
+Environment=OTA_SYNC_SOURCE=release
+Environment=OTA_SYNC_CHANNELS=stable,dev
+Environment=OTA_WEB_ROOT=/opt/amap-ota-update-server/public/ota
+Environment=SYNC_INTERVAL_MS=3600000
+Environment=PUBLIC_BASE_URL=https://ota.example.com
+ExecStart=/usr/bin/node server.mjs
+Restart=always
+RestartSec=5
+User=www-data
+
+[Install]
+WantedBy=multi-user.target

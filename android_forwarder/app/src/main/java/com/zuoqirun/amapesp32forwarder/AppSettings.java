@@ -6,12 +6,14 @@ import android.content.SharedPreferences;
 final class AppSettings {
     static final String TRANSPORT_UDP = "udp";
     static final String TRANSPORT_BLE = "ble";
+    static final String DEFAULT_TARGET_PACKAGE = "com.autonavi.amapauto";
 
     private static final String PREFS = "amap_esp32_forwarder";
     private static final String KEY_ENABLED = "enabled";
     private static final String KEY_TRANSPORT = "transport";
     private static final String KEY_IP = "esp32_ip";
     private static final String KEY_PORT = "udp_port";
+    private static final String KEY_TARGET_PACKAGE = "target_package";
     private static final String KEY_LAST_SENT = "last_sent";
     private static final String KEY_LAST_PAYLOAD = "last_payload";
     private static final String KEY_LAST_ERROR = "last_error";
@@ -53,6 +55,24 @@ final class AppSettings {
 
     static void setUdpPort(Context context, int port) {
         prefs(context).edit().putInt(KEY_PORT, Math.max(1, Math.min(65535, port))).apply();
+    }
+
+    static String getTargetPackage(Context context) {
+        return normalizeTargetPackage(prefs(context).getString(
+                KEY_TARGET_PACKAGE, DEFAULT_TARGET_PACKAGE));
+    }
+
+    static void setTargetPackage(Context context, String packageName) {
+        prefs(context).edit()
+                .putString(KEY_TARGET_PACKAGE, normalizeTargetPackage(packageName))
+                .apply();
+    }
+
+    static String normalizeTargetPackage(String packageName) {
+        if (packageName == null || packageName.trim().isEmpty()) {
+            return DEFAULT_TARGET_PACKAGE;
+        }
+        return packageName.trim();
     }
 
     static void noteBroadcast(Context context) {

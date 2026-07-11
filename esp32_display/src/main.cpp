@@ -2,6 +2,7 @@
 #include <Wire.h>
 
 #include "Config.h"
+#include "BleReceiver.h"
 #include "DisplayRenderer.h"
 #include "TftRenderer.h"
 #include "NavState.h"
@@ -10,6 +11,7 @@
 #include "ProtocolParser.h"
 
 NetworkManager network;
+BleReceiver ble;
 OtaManager ota;
 ProtocolParser parser;
 #if AMAP_DISPLAY_PROFILE == AMAP_DISPLAY_PROFILE_TFT
@@ -59,6 +61,10 @@ void setup() {
   displayReady = true;
   scanI2CBus();
 #endif
+  // Initialise the Bluetooth controller before Wi-Fi. On ESP32-S3 the radio
+  // coexistence layer must be established by NimBLE before Wi-Fi enters
+  // AP/STA mode, otherwise some Arduino core builds abort in coex_enable().
+  ble.begin();
   ota.begin();
   network.begin(&ota, &navState);
 }
@@ -91,20 +97,37 @@ void loop() {
     }
   }
 
+  length = ble.readPacket(packetBuffer, sizeof(packetBuffer));
+  if (length > 0) {
+    String error;
+    if (parser.parse(packetBuffer, static_cast<size_t>(length), navState, error)) {
+      Serial.printf("BLE length=%d seq=%lu mode=%s active=%s lightCount=%u\n",
+                    length,
+                    static_cast<unsigned long>(navState.seq),
+                    navState.mode.c_str(),
+                    navState.active ? "true" : "false",
+                    navState.lightCount);
+    } else {
+      Serial.printf("BLE JSON parse failed: %s\n", error.c_str());
+    }
+  }
+
   unsigned long now = millis();
   if (now - lastRenderAt >= 150UL) {
     lastRenderAt = now;
     unsigned long silenceMs = navState.lastPacketAt == 0 ? ULONG_MAX : now - navState.lastPacketAt;
-    display.render(navState, network.isConnected(), network.ipString(), AMAP_UDP_PORT, silenceMs);
+    display.render(navState, network.isConnected(), ble.isConnected(), network.ipString(),
+                   AMAP_UDP_PORT, silenceMs);
   }
 
   String statusText = network.statusText();
   if (statusText != lastStatusText || now - lastStatusLogAt >= 30000UL) {
     lastStatusLogAt = now;
     lastStatusText = statusText;
-    Serial.printf("status=%s udp=%u lastPacket=%lu ms\n",
+    Serial.printf("status=%s udp=%u ble=%s lastPacket=%lu ms\n",
                   statusText.c_str(),
                   AMAP_UDP_PORT,
+                  ble.isConnected() ? "connected" : "advertising",
                   navState.lastPacketAt == 0 ? 0UL : now - navState.lastPacketAt);
   }
 }

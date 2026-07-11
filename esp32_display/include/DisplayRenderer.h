@@ -6,12 +6,13 @@
 class DisplayRenderer {
 public:
   void begin();
-  void render(const NavState& state, bool wifiConnected, const String& ip,
+  void render(const NavState& state, bool wifiConnected, bool bleConnected, const String& ip,
               uint16_t port, unsigned long silenceMs);
 
 private:
   void renderNetwork(bool wifiConnected, const String& ip, uint16_t port);
-  void renderStandby(const String& message, bool wifiConnected, const String& ip, uint16_t port);
+  void renderStandby(const String& message, bool wifiConnected, bool bleConnected,
+                     const String& ip, uint16_t port);
   void renderNav(const NavState& state, unsigned long silenceMs);
   void setTextFont();
   void setSmallFont();

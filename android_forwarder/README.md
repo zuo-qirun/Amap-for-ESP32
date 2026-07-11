@@ -1,6 +1,6 @@
 # Android Forwarder
 
-轻量 Android 转发 App，负责监听高德地图车机版广播、聚合导航状态，并通过 UDP 发送给 ESP32-S3。
+轻量 Android 转发 App，负责监听高德地图车机版广播、聚合导航状态，并通过 UDP 或 BLE 发送给 ESP32-S3。
 
 ## 许可证
 
@@ -8,7 +8,7 @@
 
 ## 模块
 
-- `MainActivity.java`：设置页，控制转发开关、ESP32 IP、UDP 端口、测试帧和状态显示。
+- `MainActivity.java`：设置页，控制目标高德应用、UDP/BLE、测试帧和状态显示。
 - `ForwarderService.java`：前台服务，动态注册高德广播并保持后台转发。
 - `AMapBroadcastReceiver.java`：广播入口。
 - `AMapStateAggregator.java`：维护完整导航状态快照。
@@ -16,7 +16,8 @@
 - `TrafficLightParser.java`：把红绿灯倒计时解析成简化数组。
 - `Esp32Protocol.java`：生成协议 v1 JSON。
 - `Esp32UdpForwarder.java`：节流、心跳和 UDP 发送。
-- `Esp32Transport.java` / `UdpTransport.java` / `BleTransport.java`：传输层抽象，BLE 目前预留。
+- `Esp32Transport.java` / `UdpTransport.java` / `BleTransport.java`：UDP/BLE 传输层；BLE 自动扫描开发板并协商 MTU。
+- `BlePacketFramer.java`：把完整 JSON 切成带帧号、偏移和首尾标记的 GATT 分片。
 
 ## 监听的高德 action
 
@@ -42,11 +43,11 @@ com.autonavi.amapauto.AUTO_WIDGET_UPDATE_CRUISE_TRAFFIC_LIGHT_INFO
 - `compileSdk 36`，`targetSdk 35`
 - 原生 Java Activity/Service，无 AndroidX 依赖
 
-安装后先授予通知权限，再启用转发服务。服务是前台服务，不需要悬浮窗权限。
+安装后授予通知权限；使用 BLE 时还需授予“附近设备”权限。服务是前台服务，不需要悬浮窗权限。
 
 ## 调试
 
-1. 先在 App 内填写 ESP32 IP 和端口。
+1. UDP 模式填写 ESP32 IP 和端口；BLE 模式无需填写 IP，也无需提前配对。
 2. 点击“发送测试帧”。
 3. ESP32 OLED 和串口应显示测试导航数据。
 4. 再打开高德地图车机版导航或巡航，观察 App 内“最近广播 / 最近发送 / Payload / 最近错误”。
@@ -55,4 +56,5 @@ com.autonavi.amapauto.AUTO_WIDGET_UPDATE_CRUISE_TRAFFIC_LIGHT_INFO
 
 - `UnknownHost`：ESP32 IP 填写错误。
 - `Network unreachable`：手机和 ESP32 不在同一网段，或热点客户端隔离。
-- 选择 BLE 后报错：当前 BLE 只是预留接口，请切回 UDP。
+- `未找到 AMap-ESP32 BLE 设备`：确认开发板已刷入支持 BLE 的固件、蓝牙已开启且距离足够近。
+- `请授予附近设备权限`：在系统应用权限中允许本 App 使用附近设备。

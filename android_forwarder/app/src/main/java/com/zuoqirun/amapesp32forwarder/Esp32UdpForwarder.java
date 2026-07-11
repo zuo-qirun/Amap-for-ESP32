@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 final class Esp32UdpForwarder {
     private static final String TAG = "AmapEsp32";
@@ -16,6 +17,7 @@ final class Esp32UdpForwarder {
     private final Context appContext;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final AtomicLong seq = new AtomicLong(1L);
+    private final AtomicBoolean sendPending = new AtomicBoolean(false);
     private long lastSendAt;
     private String lastFingerprint = "";
     private Esp32Transport transport;
@@ -38,10 +40,19 @@ final class Esp32UdpForwarder {
         if (!force && now - lastSendAt < MIN_INTERVAL_MS) {
             return;
         }
+        if (!sendPending.compareAndSet(false, true)) {
+            return;
+        }
         lastFingerprint = fingerprint;
         lastSendAt = now;
         Esp32NavState snapshot = state.copy();
-        executor.execute(() -> doSend(snapshot));
+        executor.execute(() -> {
+            try {
+                doSend(snapshot);
+            } finally {
+                sendPending.set(false);
+            }
+        });
     }
 
     synchronized void stop() {
@@ -63,14 +74,15 @@ final class Esp32UdpForwarder {
             byte[] payload = Esp32Protocol.encode(snapshot, packetSeq);
             target.send(payload);
             if (BuildConfig.DEBUG) {
-                Log.d(TAG, "UDP JSON seq=" + packetSeq + " "
+                Log.d(TAG, AppSettings.getTransport(appContext).toUpperCase()
+                        + " JSON seq=" + packetSeq + " "
                         + new String(payload, StandardCharsets.UTF_8));
             }
             AppSettings.noteSent(appContext, payload.length);
         } catch (Throwable t) {
             resetTransport();
             AppSettings.noteError(appContext, readableError(t));
-            Log.w(TAG, "UDP send failed; transport reset for next heartbeat", t);
+            Log.w(TAG, "Send failed; transport reset for next heartbeat", t);
         }
     }
 
@@ -90,7 +102,7 @@ final class Esp32UdpForwarder {
         }
         stop();
         if (AppSettings.TRANSPORT_BLE.equals(mode)) {
-            transport = new BleTransport();
+            transport = new BleTransport(appContext);
         } else {
             transport = new UdpTransport(AppSettings.getEsp32Ip(appContext), AppSettings.getUdpPort(appContext));
         }

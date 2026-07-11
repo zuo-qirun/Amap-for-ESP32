@@ -42,6 +42,13 @@
 #define OTA_HEALTHY_MARK_DELAY_MS 8000UL
 
 #define AMAP_UDP_PORT 4210
+// BLE uses a Nordic-UART-style service with a write-only RX characteristic.
+// Android splits each JSON snapshot into framed chunks and the ESP32 parses it
+// only after every chunk has arrived.
+#define AMAP_BLE_DEVICE_NAME_PREFIX "AMap-ESP32-"
+#define AMAP_BLE_SERVICE_UUID "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
+#define AMAP_BLE_RX_UUID "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
+#define AMAP_BLE_MTU 517
 // Rich route, road and service-area fields can exceed the old 1200-byte
 // snapshot. The Android sender compacts verbose fields when needed.
 #define AMAP_PACKET_BUFFER_SIZE 2048

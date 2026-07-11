@@ -27,7 +27,10 @@ void NetworkManager::begin(OtaManager* ota, const NavState* navigation) {
   otaManager = ota;
   navigationState = navigation;
   WiFi.persistent(false);
-  WiFi.setSleep(false);
+  // ESP32-S3 radio coexistence requires Wi-Fi modem sleep while BLE is
+  // enabled. Disabling it makes the Wi-Fi task abort as soon as both radios
+  // start, so keep power save enabled and let the coexistence scheduler work.
+  WiFi.setSleep(true);
   portalSsidName = makePortalSsid();
   loadCredentials();
   loadDeveloperOptions();

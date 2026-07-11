@@ -39,12 +39,12 @@ bool TftRenderer::isReady() const {
   return ready;
 }
 
-void TftRenderer::render(const NavState& state, bool wifiConnected, const String& ip,
-                         uint16_t port, unsigned long silenceMs) {
+void TftRenderer::render(const NavState& state, bool wifiConnected, bool bleConnected,
+                         const String& ip, uint16_t port, unsigned long silenceMs) {
   if (!ready) {
     return;
   }
-  TftFrameRenderer::render(tft, tftFont, state, wifiConnected, silenceMs);
+  TftFrameRenderer::render(tft, tftFont, state, wifiConnected || bleConnected, silenceMs);
   (void)ip;
   (void)port;
 }

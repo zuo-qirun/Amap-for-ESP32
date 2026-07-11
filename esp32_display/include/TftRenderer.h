@@ -9,7 +9,7 @@ class TftRenderer {
 public:
   void begin();
   bool isReady() const;
-  void render(const NavState& state, bool wifiConnected, const String& ip,
+  void render(const NavState& state, bool wifiConnected, bool bleConnected, const String& ip,
               uint16_t port, unsigned long silenceMs);
 
 private:

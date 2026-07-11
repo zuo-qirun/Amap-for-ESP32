@@ -21,16 +21,16 @@ void DisplayRenderer::begin() {
   u8g2.setContrast(255);
 }
 
-void DisplayRenderer::render(const NavState& state, bool wifiConnected, const String& ip,
-                             uint16_t port, unsigned long silenceMs) {
+void DisplayRenderer::render(const NavState& state, bool wifiConnected, bool bleConnected,
+                             const String& ip, uint16_t port, unsigned long silenceMs) {
   u8g2.clearBuffer();
-  if (!wifiConnected) {
+  if (!wifiConnected && !bleConnected) {
     renderNetwork(false, ip, port);
   } else if (silenceMs > AMAP_STANDBY_MS || !state.active) {
     renderStandby(silenceMs > AMAP_STANDBY_MS ? "等待手机连接" : "等待导航数据",
-                  true, ip, port);
+                  wifiConnected, bleConnected, ip, port);
   } else if (silenceMs > AMAP_STALE_MS) {
-    renderStandby("等待手机数据", true, ip, port);
+    renderStandby("等待手机数据", wifiConnected, bleConnected, ip, port);
   } else {
     renderNav(state, silenceMs);
   }
@@ -38,18 +38,21 @@ void DisplayRenderer::render(const NavState& state, bool wifiConnected, const St
 }
 
 void DisplayRenderer::renderNetwork(bool wifiConnected, const String& ip, uint16_t port) {
-  renderStandby(wifiConnected ? "等待手机连接" : "AP 配网模式", wifiConnected, ip, port);
+  renderStandby(wifiConnected ? "等待手机连接" : "AP 配网模式",
+                wifiConnected, false, ip, port);
 }
 
 void DisplayRenderer::renderStandby(const String& message, bool wifiConnected,
-                                    const String& ip, uint16_t port) {
+                                    bool bleConnected, const String& ip, uint16_t port) {
   int width = u8g2.getDisplayWidth();
   setTextFont();
   drawClipped(0, 12, width, "AMap ESP32 Display");
   drawClipped(0, 28, width, message);
-  drawClipped(0, 44, width, String("UDP :") + port);
+  drawClipped(0, 44, width, bleConnected ? "BLE connected" : String("UDP :") + port);
   if (wifiConnected) {
     drawClipped(0, 60, width, "IP " + ip);
+  } else if (bleConnected) {
+    drawClipped(0, 60, width, "WiFi optional");
   } else if (ip != "0.0.0.0") {
     drawClipped(0, 60, width, "AP " + ip);
   } else {

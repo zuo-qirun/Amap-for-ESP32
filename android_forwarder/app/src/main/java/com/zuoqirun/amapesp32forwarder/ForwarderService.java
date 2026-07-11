@@ -25,9 +25,8 @@ public final class ForwarderService extends Service implements AMapBroadcastRece
     private static final int NOTIFICATION_ID = 4210;
     private static final String TAG = "AMapEsp32Forwarder";
     // AMap Auto replies to an ACTION_RECV query with a snapshot addressed to
-    // the querying package.  Passive broadcasts alone omit cruise-light data
-    // on several head-unit builds.
-    private static final String AMAP_AUTO_PACKAGE = "com.autonavi.amapauto";
+    // the querying package. Passive broadcasts alone omit cruise-light data
+    // on several head-unit builds, and coexistence builds use other packages.
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable heartbeat = new Runnable() {
@@ -147,14 +146,16 @@ public final class ForwarderService extends Service implements AMapBroadcastRece
 
     private void requestAmapSnapshot(int keyType, int exitInfoType) {
         try {
+            String targetPackage = AppSettings.getTargetPackage(this);
             Intent request = new Intent(AMapConstants.ACTION_RECV);
-            request.setPackage(AMAP_AUTO_PACKAGE);
+            request.setPackage(targetPackage);
             request.putExtra("KEY_TYPE", keyType);
             if (exitInfoType != 0) {
                 request.putExtra("EXIT_INFO_TYPE", exitInfoType);
             }
             sendBroadcast(request);
-            Log.d(TAG, "request AMap snapshot KEY_TYPE=" + keyType);
+            Log.d(TAG, "request AMap snapshot KEY_TYPE=" + keyType
+                    + " targetPackage=" + targetPackage);
         } catch (Throwable error) {
             Log.w(TAG, "request AMap snapshot failed KEY_TYPE=" + keyType, error);
         }

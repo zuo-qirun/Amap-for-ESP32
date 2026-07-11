@@ -114,18 +114,13 @@ public final class ForwarderService extends Service implements AMapBroadcastRece
     public void onAmapBroadcast(Intent intent) {
         AppSettings.noteBroadcast(this);
         String action = intent == null ? "" : intent.getAction();
-        if (intent != null && (action != null && action.toLowerCase().contains("traffic_light")
+        if (BuildConfig.DEBUG && intent != null && (action != null
+                && action.toLowerCase().contains("traffic_light")
                 || TrafficLightParser.hasTrafficLightPayload(intent.getExtras()))) {
             Bundle extras = intent.getExtras();
-            if (BuildConfig.DEBUG) {
-                Log.d(TAG, "Traffic input action=" + action
-                        + " KEY_TYPE=" + BundleReaders.intValue(extras, -1, "KEY_TYPE", "keyType")
-                        + " lightsData=" + String.valueOf(BundleReaders.safeExtra(extras, "lightsData"))
-                        + " lightsCount=" + BundleReaders.intValue(extras, -1, "lightsCount", "LIGHTS_COUNT")
-                        + " clearLights=" + BundleReaders.booleanValue(extras, false,
-                        "clearLights", "EXTRA_CLEAR_LIGHTS")
-                        + " fields=" + (extras == null ? "[]" : extras.keySet()));
-            }
+            Log.d(TAG, "Traffic input action=" + action
+                    + " KEY_TYPE=" + BundleReaders.intValue(extras, -1, "KEY_TYPE", "keyType")
+                    + " extras=" + TrafficLightParser.describeExtras(extras));
         }
         boolean forceClear = intent != null && TrafficLightParser.isClearPayload(intent.getExtras());
         Esp32NavState snapshot = aggregator.handleIntent(intent);

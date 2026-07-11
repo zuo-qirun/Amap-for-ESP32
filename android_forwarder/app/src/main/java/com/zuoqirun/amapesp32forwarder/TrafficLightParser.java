@@ -102,6 +102,7 @@ final class TrafficLightParser {
                 "dir", "direction", "trafficLightDir", "trafficLightDirection",
                 "trafficLights", "trafficLight", "trafficLightInfo", "trafficLightsCountdownInfo",
                 "lightsData", "LIGHTS_DATA", "cameraLightInfo", "cameraLightInfos",
+                "cameraLightInfoWrapper", "camera_light_info_wrapper",
                 "cameraLights", "lightInfos", "lightsCount", "LIGHTS_COUNT",
                 "clearLights", "EXTRA_CLEAR_LIGHTS");
     }

@@ -1,5 +1,9 @@
 # Navigation resources
 
+The generated `NaviLinkIcons.cpp` asset set is derived from Navi-Link. See
+[`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) for upstream links,
+the imported resource scope, and the upstream license status.
+
 `NavigationIcons` stores original 1-bit XBM-style artwork in ESP32 program
 memory. It is part of the application image, so no SPIFFS mount, PNG decoder,
 or external SD card is required.

@@ -138,6 +138,20 @@ public class TrafficLightParserTest {
         assertLight(result, 0, 2, 1, 11);
     }
 
+    @Test
+    public void cameraLightInfoWrapperEntersCruiseParser() {
+        Map<String, Object> extras = new HashMap<>();
+        extras.put("cameraLightInfoWrapper",
+                "CameraLightInfo{direction=2,status=1,countDown=9}");
+
+        TrafficLightParser.Result result = TrafficLightParser.parse(extras, true, -1, 0);
+
+        assertTrue(result.handled);
+        assertFalse(result.clear);
+        assertTrue(result.setCruiseMode);
+        assertLight(result, 0, 4, 4, 9);
+    }
+
     private static Map<String, Object> cruisePayload(String lightsData) {
         Map<String, Object> extras = new HashMap<>();
         extras.put("KEY_TYPE", AMapConstants.KEY_TYPE_TRAFFIC_LIGHT);

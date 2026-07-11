@@ -39,12 +39,40 @@ uint16_t tmcColor(int status) {
   }
 }
 
-String compact(String text, int maximum) {
-  if (text.length() <= maximum) {
-    return text;
+size_t utf8CharacterBytes(uint8_t firstByte) {
+  if ((firstByte & 0x80) == 0) return 1;
+  if ((firstByte & 0xE0) == 0xC0) return 2;
+  if ((firstByte & 0xF0) == 0xE0) return 3;
+  if ((firstByte & 0xF8) == 0xF0) return 4;
+  return 1;
+}
+
+String clipUtf8ToWidth(U8G2_FOR_ADAFRUIT_GFX& font, const String& text, int16_t maxWidth) {
+  if (maxWidth <= 0) return "";
+  if (font.getUTF8Width(text.c_str()) <= maxWidth) return text;
+
+  const String suffix = "...";
+  const int16_t contentWidth = max<int16_t>(0, maxWidth - font.getUTF8Width(suffix.c_str()));
+  String result;
+  size_t offset = 0;
+  while (offset < text.length()) {
+    size_t bytes = utf8CharacterBytes(static_cast<uint8_t>(text[offset]));
+    if (offset + bytes > text.length()) break;
+    bool valid = true;
+    for (size_t i = 1; i < bytes; ++i) {
+      if ((static_cast<uint8_t>(text[offset + i]) & 0xC0) != 0x80) {
+        valid = false;
+        break;
+      }
+    }
+    if (!valid) bytes = 1;
+
+    String candidate = result + text.substring(offset, offset + bytes);
+    if (font.getUTF8Width(candidate.c_str()) > contentWidth) break;
+    result = candidate;
+    offset += bytes;
   }
-  text.remove(maximum);
-  return text + "\xE2\x80\xA6";
+  return result + suffix;
 }
 
 String numericPart(const String& value) {
@@ -96,14 +124,17 @@ void drawAlphaBitmap(Adafruit_GFX& display, const NaviLinkIcons::Bitmap& bitmap,
 }  // namespace
 
 void TftFrameRenderer::render(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
-                              const NavState& state, bool wifiConnected,
-                              unsigned long silenceMs) {
-  if (!wifiConnected) {
-    renderStandby(display, font, "AMap ESP32", "AP configuration mode");
+                              const NavState& state, bool wifiConnected, bool bleConnected,
+                              const String& ip, uint16_t port, unsigned long silenceMs) {
+  if (!wifiConnected && !bleConnected) {
+    renderStandby(display, font, "设备配网模式", "连接设备热点后打开配置页面",
+                  wifiConnected, bleConnected, ip, port);
   } else if (!state.active || silenceMs > AMAP_STANDBY_MS) {
-    renderStandby(display, font, "AMap ESP32", "Waiting for navigation JSON");
+    renderStandby(display, font, "等待导航数据", "请打开手机转发器并开始导航",
+                  wifiConnected, bleConnected, ip, port);
   } else if (silenceMs > AMAP_STALE_MS) {
-    renderStandby(display, font, "Navigation paused", "Waiting for phone data");
+    renderStandby(display, font, "手机数据已暂停", "正在等待新的 UDP / BLE 数据",
+                  wifiConnected, bleConnected, ip, port);
   } else if (state.mode == "cruise") {
     renderCruise(display, font, state);
   } else {
@@ -117,15 +148,39 @@ void TftFrameRenderer::drawShell(Adafruit_GFX& display) {
 }
 
 void TftFrameRenderer::renderStandby(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
-                                     const String& title, const String& detail) {
+                                     const String& title, const String& detail,
+                                     bool wifiConnected, bool bleConnected, const String& ip,
+                                     uint16_t port) {
   drawShell(display);
   display.drawRoundRect(4, 4, display.width() - 8, display.height() - 8, 12, kCapsuleStroke);
-  display.fillRoundRect(18, 58, display.width() - 36, 122, 12, kInfoSurface);
-  display.fillRoundRect(34, 76, 82, 20, 10, kCapsule);
-  drawUtf8(font, 49, 90, "AMAP", kAccent);
-  drawUtf8(font, 34, 122, title, kText);
-  drawClipped(font, 34, 148, display.width() - 68, detail, kTextSoft);
-  drawUtf8(font, 34, 168, "NAVI-LINK STYLE / ST7789", kMuted);
+
+  // Brand header and a small geometric navigation mark.
+  display.fillRoundRect(14, 13, 40, 40, 10, kAccent);
+  display.fillTriangle(34, 20, 23, 44, 34, 38, kText);
+  display.fillTriangle(34, 20, 45, 44, 34, 38, kTextSoft);
+  drawUtf8(font, 64, 31, "AMAP NAV", kText);
+  drawUtf8(font, 64, 47, "ESP32-S3 · ST7789", kMuted);
+
+  display.fillRoundRect(14, 64, display.width() - 28, 76, 12, kInfoSurface);
+  display.fillCircle(31, 84, 5, (!wifiConnected && !bleConnected) ? kYellow : kAccent);
+  drawUtf8(font, 44, 89, title, kText);
+  drawClipped(font, 26, 116, display.width() - 52, detail, kTextSoft);
+  display.fillRect(26, 126, display.width() - 52, 1, kDivider);
+
+  const uint16_t wifiColor = wifiConnected ? kGreen : kMuted;
+  const uint16_t bleColor = bleConnected ? kGreen : kMuted;
+  display.fillRoundRect(14, 151, 88, 28, 14, kCapsule);
+  display.fillCircle(28, 165, 4, wifiColor);
+  drawUtf8(font, 38, 170, wifiConnected ? "Wi-Fi 在线" : "Wi-Fi 离线", kTextSoft);
+  display.fillRoundRect(108, 151, 86, 28, 14, kCapsule);
+  display.fillCircle(122, 165, 4, bleColor);
+  drawUtf8(font, 132, 170, bleConnected ? "BLE 在线" : "BLE 等待", kTextSoft);
+  display.fillRoundRect(200, 151, 106, 28, 14, kCapsule);
+  drawUtf8(font, 214, 170, String("UDP ") + port, kTextSoft);
+
+  display.fillRoundRect(14, 190, display.width() - 28, 34, 9, kInfoSurface);
+  const String address = ip.isEmpty() || ip == "0.0.0.0" ? "等待网络地址" : String("访问 ") + ip;
+  drawClipped(font, 26, 212, display.width() - 52, address, kTextSoft);
 }
 
 void TftFrameRenderer::renderNavigation(Adafruit_GFX& display,
@@ -200,7 +255,16 @@ void TftFrameRenderer::drawNavigationInfo(Adafruit_GFX& display,
   if (destination.isEmpty()) {
     destination = state.guide.exitName;
   }
-  if (!destination.isEmpty()) {
+  // Service-area broadcasts are transient and operationally more useful than
+  // the static destination, so show them as soon as they are available.
+  if (!state.guide.serviceAreaName.isEmpty()) {
+    drawUtf8(font, 18, top + height - 10, "SAPA", kMuted);
+    String serviceArea = state.guide.serviceAreaName;
+    if (!state.guide.serviceAreaDistance.isEmpty()) {
+      serviceArea += " " + state.guide.serviceAreaDistance;
+    }
+    drawClipped(font, 56, top + height - 10, display.width() - 72, serviceArea, kTextSoft);
+  } else if (!destination.isEmpty()) {
     drawUtf8(font, 18, top + height - 10, "DEST", kMuted);
     drawClipped(font, 56, top + height - 10, display.width() - 72, destination, kMuted);
   } else if (state.speed.limit > 0) {
@@ -237,7 +301,7 @@ void TftFrameRenderer::drawUtf8(U8G2_FOR_ADAFRUIT_GFX& font, int16_t x, int16_t 
 
 void TftFrameRenderer::drawClipped(U8G2_FOR_ADAFRUIT_GFX& font, int16_t x, int16_t baseline,
                                    int16_t maxWidth, const String& text, uint16_t color) {
-  drawUtf8(font, x, baseline, compact(text, max(1, maxWidth / 7)), color);
+  drawUtf8(font, x, baseline, clipUtf8ToWidth(font, text, maxWidth), color);
 }
 
 void TftFrameRenderer::drawBig(Adafruit_GFX& display, int16_t x, int16_t top,

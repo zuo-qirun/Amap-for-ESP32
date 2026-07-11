@@ -40,7 +40,8 @@ ESP32-S3 PlatformIO + Arduino 工程，接收 Android App 发来的 UDP 或 BLE 
 - GATT 服务 UUID：`6e400001-b5a3-f393-e0a9-e50e24dcca9e`。
 - 写入特征 UUID：`6e400002-b5a3-f393-e0a9-e50e24dcca9e`。
 - Android 会按协商 MTU 分片发送完整 JSON；ESP32 校验帧号、偏移和总长度后重组，最大包长为 `AMAP_PACKET_BUFFER_SIZE`。
-- BLE 可以在没有 Wi-Fi 的情况下驱动屏幕；Wi-Fi 仍可同时用于配置页与 OTA。
+- BLE 可以在没有 Wi-Fi 的情况下驱动屏幕；Wi-Fi 仍可同时用于配置页与 OTA。ESP32-S3 会让 Wi-Fi（含 AP 配网热点）和 BLE 分时共存；两者高吞吐时可能增加延迟，但不会互相排斥。
+- Android 转发器使用免系统配对的 GATT 连接，因此通常不会产生 bond。配置页的“清除 BLE 配对设备”会删除 ESP32 端所有 NimBLE bond、断开当前 BLE 客户端并重新广播；若页面显示 0，表示设备端没有可删除的配对记录。
 
 ## AP 配网页面
 
@@ -48,11 +49,13 @@ ESP32-S3 PlatformIO + Arduino 工程，接收 Android App 发来的 UDP 或 BLE 
 
 1. 手机连接热点 `AMap-ESP32-xxxxxx`。
 2. 系统通常会自动弹出配网页面；若没有弹出，手动访问 `http://192.168.4.1/`。
-3. 页面会显示 Wi-Fi 状态、当前 SSID、配置来源、STA IP、UDP 端口、配网热点状态。
+3. 页面会显示 Wi-Fi 状态、当前 SSID、配置来源、STA IP、UDP 端口、BLE 连接/配对记录及配网热点状态。
 4. 输入新的 Wi-Fi 名称和密码，点击“保存并连接”。
 5. 连接成功后配网热点会关闭；之后仍可通过串口打印的 STA IP 访问同一个状态/配网页面。
 
 页面还提供“清除保存的 Wi-Fi”，清除后会回退到 `Config.h` 兜底配置；如果兜底 SSID 仍是占位符，则继续保持配网模式。
+
+页面的“清除 BLE 配对设备”会清除 ESP32 本机的 NimBLE bond（不会删除手机系统里任何其他蓝牙设备），并让当前客户端断线后重新广播。
 
 配网热点默认不设置密码，便于手机自动弹出 captive portal；如需加密，可把 `AMAP_CONFIG_AP_PASSWORD` 改为 8 位以上密码。
 
@@ -184,6 +187,10 @@ ESP32 只需要访问国内服务器，例如：
 7. 写入成功后自动重启。
 
 升级失败时，配置页面会显示 HTTP 错误、manifest 错误、大小不匹配、SHA256 校验失败或 `Update` 写入错误。ESP32 会自动跟随 manifest / firmware 的常见重定向（301/302/303/307/308），适用于站点将 `http` 跳转到 `https` 的场景。
+
+### 手动上传固件
+
+配置页的 OTA 区域还提供“上传并安装 `.bin`”。选择由 `pio run` 生成的 `firmware.bin` 后确认上传，设备会检查文件扩展名、ESP32 镜像头和可用 OTA 分区空间，写入成功后自动重启。手动上传不读取 manifest，也不校验 SHA256；仅上传可信的本项目 ESP32-S3 固件。上传期间会暂停后台 OTA 检查，避免同时访问或写入更新分区。配置页没有额外的登录认证：仅在可信 Wi-Fi 上使用；若需要在 AP 配网模式手动上传，请将 `AMAP_CONFIG_AP_PASSWORD` 设置为至少 8 位的密码。
 
 ### dev 回退 stable
 

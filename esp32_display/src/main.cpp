@@ -1,9 +1,6 @@
 #include <Arduino.h>
-#include <Wire.h>
-
 #include "Config.h"
 #include "BleReceiver.h"
-#include "DisplayRenderer.h"
 #include "TftRenderer.h"
 #include "NavState.h"
 #include "NetworkManager.h"
@@ -14,11 +11,7 @@ NetworkManager network;
 BleReceiver ble;
 OtaManager ota;
 ProtocolParser parser;
-#if AMAP_DISPLAY_PROFILE == AMAP_DISPLAY_PROFILE_TFT
 TftRenderer display;
-#else
-DisplayRenderer display;
-#endif
 NavState navState;
 
 char packetBuffer[AMAP_PACKET_BUFFER_SIZE];
@@ -26,26 +19,6 @@ unsigned long lastRenderAt = 0;
 unsigned long lastStatusLogAt = 0;
 String lastStatusText;
 bool displayReady = false;
-
-void scanI2CBus() {
-  Serial.printf("I2C scan on SDA=%u SCL=%u, OLED addr8=0x%02X addr7=0x%02X\n",
-                AMAP_OLED_SDA_PIN,
-                AMAP_OLED_SCL_PIN,
-                AMAP_OLED_I2C_ADDRESS,
-                AMAP_OLED_I2C_ADDRESS >> 1);
-  bool found = false;
-  for (uint8_t address = 1; address < 127; ++address) {
-    Wire.beginTransmission(address);
-    uint8_t error = Wire.endTransmission();
-    if (error == 0) {
-      found = true;
-      Serial.printf("I2C device found: addr7=0x%02X addr8=0x%02X\n", address, address << 1);
-    }
-  }
-  if (!found) {
-    Serial.println("I2C scan found no devices. Check VCC/GND/SDA/SCL and OLED power.");
-  }
-}
 
 void setup() {
   Serial.begin(115200);
@@ -55,23 +28,22 @@ void setup() {
 
   navState.reset();
   display.begin();
-#if AMAP_DISPLAY_PROFILE == AMAP_DISPLAY_PROFILE_TFT
   displayReady = display.isReady();
-#else
-  displayReady = true;
-  scanI2CBus();
-#endif
   // Initialise the Bluetooth controller before Wi-Fi. On ESP32-S3 the radio
   // coexistence layer must be established by NimBLE before Wi-Fi enters
   // AP/STA mode, otherwise some Arduino core builds abort in coex_enable().
   ble.begin();
   ota.begin();
-  network.begin(&ota, &navState);
+  network.begin(&ota, &navState, &ble);
 }
 
 void loop() {
   network.update();
-  ota.update(network.isConnected(), network.isWebReady(), displayReady);
+  // Do not start a background manifest request while the same flash update
+  // partition is being written by a browser upload.
+  if (!network.isManualFirmwareUpdatePending()) {
+    ota.update(network.isConnected(), network.isWebReady(), displayReady);
+  }
 
   IPAddress remoteIp;
   uint16_t remotePort = 0;

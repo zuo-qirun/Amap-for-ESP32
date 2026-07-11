@@ -261,24 +261,22 @@ final class AMapStateAggregator {
             state.guide.exitDirection = exitDirection;
         }
 
-        String serviceArea = BundleReaders.valueString(extras, "SAPA_NAME", "serviceAreaName");
-        String serviceAreaDistance = BundleReaders.valueString(extras, "SAPA_DIST_AUTO", "SAPA_DIST",
-                "serviceAreaDistance");
-        if (!TextUtils.isEmpty(serviceArea)) {
-            state.guide.serviceAreaName = serviceArea;
-        }
-        if (!TextUtils.isEmpty(serviceAreaDistance)) {
-            state.guide.serviceAreaDistance = serviceAreaDistance;
-        }
-
-        String nextServiceArea = BundleReaders.valueString(extras, "NEXT_SAPA_NAME", "nextServiceAreaName");
-        String nextServiceAreaDistance = BundleReaders.valueString(extras, "NEXT_SAPA_DIST_AUTO",
-                "NEXT_SAPA_DIST", "nextServiceAreaDistance");
-        if (!TextUtils.isEmpty(nextServiceArea)) {
-            state.guide.nextServiceAreaName = nextServiceArea;
-        }
-        if (!TextUtils.isEmpty(nextServiceAreaDistance)) {
-            state.guide.nextServiceAreaDistance = nextServiceAreaDistance;
+        ServiceAreaParser.Result serviceAreas = ServiceAreaParser.parse(extras);
+        if (serviceAreas.handled) {
+            state.guide.serviceAreaName = "";
+            state.guide.serviceAreaDistance = "";
+            state.guide.nextServiceAreaName = "";
+            state.guide.nextServiceAreaDistance = "";
+            if (!serviceAreas.entries.isEmpty()) {
+                ServiceAreaParser.Entry first = serviceAreas.entries.get(0);
+                state.guide.serviceAreaName = first.name;
+                state.guide.serviceAreaDistance = first.distance;
+            }
+            if (serviceAreas.entries.size() > 1) {
+                ServiceAreaParser.Entry next = serviceAreas.entries.get(1);
+                state.guide.nextServiceAreaName = next.name;
+                state.guide.nextServiceAreaDistance = next.distance;
+            }
         }
         if (extras.containsKey("EXTRA_CROSS_MAP")) {
             state.roadInfo.crossMap = BundleReaders.intValue(extras, 0, "EXTRA_CROSS_MAP", "crossMap") != 0;

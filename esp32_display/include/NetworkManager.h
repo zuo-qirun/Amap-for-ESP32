@@ -8,18 +8,23 @@
 #include <WiFiUdp.h>
 
 #include "NavState.h"
+#include "BleReceiver.h"
 #include "OtaManager.h"
 #include "TftPreviewRenderer.h"
 
 class NetworkManager {
 public:
   NetworkManager();
-  void begin(OtaManager* ota, const NavState* navigation = nullptr);
+  void begin(OtaManager* ota, const NavState* navigation = nullptr,
+             BleReceiver* ble = nullptr);
   void update();
   int readPacket(char* buffer, size_t capacity, IPAddress& remoteIp, uint16_t& remotePort);
   bool isConnected() const;
   bool isConfigPortalActive() const;
   bool isWebReady() const;
+  // True while a local .bin upload owns the OTA partition, including the
+  // short interval before its scheduled reboot.
+  bool isManualFirmwareUpdatePending() const;
   String ipString() const;
   String configPortalSsid() const;
   String configPortalUrl() const;
@@ -33,6 +38,7 @@ private:
   IPAddress portalGateway;
   IPAddress portalSubnet;
   OtaManager* otaManager = nullptr;
+  BleReceiver* bleReceiver = nullptr;
   const NavState* navigationState = nullptr;
   TftPreviewRenderer tftPreview;
   String activeSsid;
@@ -48,6 +54,12 @@ private:
   bool reconnectScheduled = false;
   bool udpStarted = false;
   bool developerPreviewEnabled = false;
+  bool manualUploadActive = false;
+  bool manualUploadSucceeded = false;
+  String manualUploadError;
+  String manualUploadFilename;
+  size_t manualUploadWritten = 0;
+  unsigned long manualRebootAt = 0;
   unsigned long lastReconnectAttempt = 0;
   unsigned long connectStartedAt = 0;
   unsigned long reconnectAt = 0;
@@ -70,6 +82,10 @@ private:
   void handleOtaCheck();
   void handleOtaUpgrade();
   void handleDeveloperPreview();
+  void handleBleClear();
+  void handleManualFirmwareUpload();
+  void handleManualFirmwareUploadComplete();
+  void failManualFirmwareUpload(const String& message);
   void handleTftBitmap();
   bool applyOtaChannelSelection(String& message);
   void handleStatusJson();

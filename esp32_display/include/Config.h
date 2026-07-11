@@ -70,19 +70,12 @@
 // Default: common 0.96" SSD1306 128x64 I2C OLED.
 #define AMAP_OLED_DRIVER AMAP_OLED_DRIVER_SSD1306_12864
 
-// Display profile. The current renderer stays on the I2C OLED; the shared
-// NavState protocol and web simulator are already sized for the future SPI
-// TFT dashboard. The selected 2.8-inch ST7789 module is 240x320 physical
+// The OLED renderer is retained only as legacy source code. Hardware output is
+// now always the selected 2.8-inch ST7789 module (240x320 physical pixels),
 // pixels and is normally used in 320x240 landscape (rotation 1). Its adapter
 // exposes VCC, GND, CS, RESET, DC, MOSI, SCK, LED and optional MISO; no touch
 // pins are needed for the no-touch module. This S3 mapping avoids the USB
 // pins, bootstrapping pins and the OLED's GPIO8/GPIO9 I2C bus.
-#define AMAP_DISPLAY_PROFILE_OLED 1
-#define AMAP_DISPLAY_PROFILE_TFT 2
-#ifndef AMAP_DISPLAY_PROFILE
-#define AMAP_DISPLAY_PROFILE AMAP_DISPLAY_PROFILE_OLED
-#endif
-
 #define AMAP_TFT_DRIVER_ST7789 1
 #define AMAP_TFT_DRIVER_ILI9341 2
 #ifndef AMAP_TFT_DRIVER
@@ -98,6 +91,9 @@
 #define AMAP_TFT_DC_PIN 14
 #define AMAP_TFT_RST_PIN 15
 #define AMAP_TFT_BL_PIN 16
+// Adafruit's ST7789 init sequence enables panel inversion by default. This
+// module displays the intended RGB565 colours with inversion disabled.
+#define AMAP_TFT_INVERT_COLORS 0
 
 // 1 enables a U8g2 CJK-capable font for Chinese roads/labels. Set to 0 if
 // firmware size is tight or your display only needs ASCII.

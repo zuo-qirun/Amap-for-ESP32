@@ -658,7 +658,11 @@ final class TrafficLightParser {
         if (status == 1 || status == 2 || status == 4) {
             return AMapConstants.LIGHT_STATUS_GREEN;
         }
-        return -1;
+        // Some AMap builds already emit the standard 0..6 display status in
+        // CameraLightInfoWrapper. Preserve extended/yellow states just like
+        // AMap Companion instead of dropping the complete cruise payload.
+        return status >= AMapConstants.LIGHT_STATUS_YELLOW_0
+                && status <= AMapConstants.LIGHT_STATUS_YELLOW_6 ? status : -1;
     }
 
     static int normalizeCruiseDirection(int dir) {
@@ -672,7 +676,10 @@ final class TrafficLightParser {
             case 3:
                 return AMapConstants.DIR_RIGHT;
             default:
-                return -1;
+                // Wrapper builds differ: older ones use compact 0..3 while
+                // newer ones can already use standard AMap directions 4..8.
+                return dir >= AMapConstants.DIR_STRAIGHT
+                        && dir <= AMapConstants.DIR_DIAGONAL_RIGHT_2 ? dir : -1;
         }
     }
 

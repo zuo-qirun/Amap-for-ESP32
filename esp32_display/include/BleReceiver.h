@@ -16,6 +16,8 @@ class BleReceiver {
   int readPacket(char* buffer, size_t capacity);
   bool isConnected() const;
   String deviceName() const;
+  int bondCount() const;
+  int clearBondedDevices();
 
  private:
   class ServerCallbacks;

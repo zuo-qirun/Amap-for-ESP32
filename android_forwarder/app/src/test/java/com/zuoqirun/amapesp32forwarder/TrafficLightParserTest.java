@@ -49,6 +49,19 @@ public class TrafficLightParserTest {
         assertEquals(1, TrafficLightParser.normalizeCruiseDirection(1));
         assertEquals(4, TrafficLightParser.normalizeCruiseDirection(2));
         assertEquals(2, TrafficLightParser.normalizeCruiseDirection(3));
+        assertEquals(4, TrafficLightParser.normalizeCruiseDirection(4));
+        assertEquals(8, TrafficLightParser.normalizeCruiseDirection(8));
+    }
+
+    @Test
+    public void cruiseWrapperAcceptsStandardDirectionAndExtendedStatus() {
+        TrafficLightParser.Result result = TrafficLightParser.parse(
+                cruisePayload("[{\"status\":3,\"countdown\":7,\"dir\":4}]"),
+                false, -1, 0);
+
+        assertTrue(result.handled);
+        assertTrue(result.setCruiseMode);
+        assertLight(result, 0, 4, 3, 7);
     }
 
     @Test

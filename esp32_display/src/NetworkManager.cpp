@@ -3,6 +3,7 @@
 #include "Config.h"
 
 #include <Esp.h>
+#include <Update.h>
 
 namespace {
 const byte DNS_PORT = 53;
@@ -23,9 +24,10 @@ NetworkManager::NetworkManager()
       portalGateway(192, 168, 4, 1),
       portalSubnet(255, 255, 255, 0) {}
 
-void NetworkManager::begin(OtaManager* ota, const NavState* navigation) {
+void NetworkManager::begin(OtaManager* ota, const NavState* navigation, BleReceiver* ble) {
   otaManager = ota;
   navigationState = navigation;
+  bleReceiver = ble;
   WiFi.persistent(false);
   // ESP32-S3 radio coexistence requires Wi-Fi modem sleep while BLE is
   // enabled. Disabling it makes the Wi-Fi task abort as soon as both radios
@@ -52,6 +54,12 @@ void NetworkManager::update() {
   }
 
   const unsigned long now = millis();
+  if (manualRebootAt != 0 && static_cast<long>(now - manualRebootAt) >= 0) {
+    Serial.println("Manual firmware upload complete; rebooting");
+    delay(50);
+    ESP.restart();
+    return;
+  }
   if (reconnectScheduled && static_cast<long>(now - reconnectAt) >= 0) {
     reconnectScheduled = false;
     if (activeSsid.isEmpty()) {
@@ -130,6 +138,10 @@ bool NetworkManager::isConfigPortalActive() const {
 
 bool NetworkManager::isWebReady() const {
   return webServerStarted;
+}
+
+bool NetworkManager::isManualFirmwareUpdatePending() const {
+  return manualUploadActive || manualRebootAt != 0;
 }
 
 String NetworkManager::ipString() const {
@@ -353,6 +365,11 @@ void NetworkManager::configureRoutes() {
   webServer.on("/ota/upgrade", HTTP_POST, [this]() { handleOtaUpgrade(); });
   webServer.on("/ota/upgrade", HTTP_GET, [this]() { redirectToRoot(); });
   webServer.on("/developer/preview", HTTP_POST, [this]() { handleDeveloperPreview(); });
+  webServer.on("/ble/clear", HTTP_POST, [this]() { handleBleClear(); });
+  webServer.on("/firmware/upload", HTTP_POST,
+               [this]() { handleManualFirmwareUploadComplete(); },
+               [this]() { handleManualFirmwareUpload(); });
+  webServer.on("/firmware/upload", HTTP_GET, [this]() { redirectToRoot(); });
   webServer.on("/status.json", HTTP_GET, [this]() { handleStatusJson(); });
   webServer.on("/tft.bmp", HTTP_GET, [this]() { handleTftBitmap(); });
   webServer.on("/generate_204", HTTP_GET, [this]() { redirectToPortal(); });
@@ -412,7 +429,9 @@ void NetworkManager::handleClear() {
 
 void NetworkManager::handleOtaCheck() {
   String message;
-  if (!otaManager) {
+  if (isManualFirmwareUpdatePending()) {
+    message = "手动固件上传正在进行或等待重启，请稍后再检查更新。";
+  } else if (!otaManager) {
     message = "OTA 管理器尚未初始化。";
   } else if (!isConnected()) {
     message = "请先连接 Wi-Fi 再检查更新。";
@@ -431,7 +450,9 @@ void NetworkManager::handleOtaCheck() {
 void NetworkManager::handleOtaUpgrade() {
   {
     String redirectMessage;
-    if (!otaManager) {
+    if (isManualFirmwareUpdatePending()) {
+      redirectMessage = "手动固件上传正在进行或等待重启，请稍后再升级。";
+    } else if (!otaManager) {
       redirectMessage = "OTA 管理器尚未初始化。";
     } else if (!isConnected()) {
       redirectMessage = "请先连接 Wi-Fi 再升级。";
@@ -456,7 +477,9 @@ void NetworkManager::handleOtaUpgrade() {
     return;
   }
   String message;
-  if (!otaManager) {
+  if (isManualFirmwareUpdatePending()) {
+    message = "手动固件上传正在进行或等待重启，请稍后再升级。";
+  } else if (!otaManager) {
     message = "OTA 管理器尚未初始化。";
   } else if (!isConnected()) {
     message = "请先连接 Wi-Fi 再升级。";
@@ -482,6 +505,125 @@ void NetworkManager::handleDeveloperPreview() {
   webServer.sendHeader("Cache-Control", "no-store");
   webServer.send(200, "text/html; charset=utf-8",
                  buildStatusPage(developerPreviewEnabled ? "已开启 TFT 模拟显示。" : "已关闭 TFT 模拟显示。"));
+}
+
+void NetworkManager::handleBleClear() {
+  if (bleReceiver == nullptr) {
+    webServer.send(503, "text/html; charset=utf-8",
+                   buildStatusPage("BLE 尚未初始化。"));
+    return;
+  }
+  const int removed = bleReceiver->clearBondedDevices();
+  String message = "已清除 " + String(removed) + " 条 BLE 配对记录";
+  message += "，并断开当前 BLE 客户端；Android 会自动重新连接。";
+  webServer.sendHeader("Cache-Control", "no-store");
+  webServer.send(200, "text/html; charset=utf-8", buildStatusPage(message));
+}
+
+void NetworkManager::handleManualFirmwareUpload() {
+  HTTPUpload& upload = webServer.upload();
+  if (upload.status == UPLOAD_FILE_START) {
+    manualUploadActive = false;
+    manualUploadSucceeded = false;
+    manualUploadError = "";
+    manualUploadFilename = upload.filename;
+    manualUploadWritten = 0;
+
+    String lowerName = manualUploadFilename;
+    lowerName.toLowerCase();
+    if (webServer.arg("confirm") != "1") {
+      failManualFirmwareUpload("缺少上传确认标记");
+      return;
+    }
+    if (lowerName.isEmpty() || !lowerName.endsWith(".bin")) {
+      failManualFirmwareUpload("请选择 .bin 固件文件");
+      return;
+    }
+    if (otaManager != nullptr && otaManager->isBusy()) {
+      failManualFirmwareUpload("在线 OTA 正在运行，请稍后再试");
+      return;
+    }
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) {
+      failManualFirmwareUpload("无法开始写入：" + String(Update.errorString()));
+      return;
+    }
+    manualUploadActive = true;
+    Serial.printf("Manual firmware upload start: %s\n", manualUploadFilename.c_str());
+    return;
+  }
+
+  if (upload.status == UPLOAD_FILE_WRITE) {
+    if (!manualUploadActive || !manualUploadError.isEmpty()) {
+      return;
+    }
+    if (upload.currentSize == 0) {
+      return;
+    }
+    if (manualUploadWritten == 0 && upload.buf[0] != 0xE9) {
+      failManualFirmwareUpload("文件不是有效的 ESP32 固件镜像");
+      return;
+    }
+    const size_t written = Update.write(upload.buf, upload.currentSize);
+    if (written != upload.currentSize) {
+      failManualFirmwareUpload("固件写入失败：" + String(Update.errorString()));
+      return;
+    }
+    manualUploadWritten += written;
+    return;
+  }
+
+  if (upload.status == UPLOAD_FILE_END) {
+    if (!manualUploadActive || !manualUploadError.isEmpty()) {
+      return;
+    }
+    if (manualUploadWritten < 4096) {
+      failManualFirmwareUpload("固件文件过小");
+      return;
+    }
+    if (!Update.end(true)) {
+      failManualFirmwareUpload("固件校验失败：" + String(Update.errorString()));
+      return;
+    }
+    manualUploadActive = false;
+    manualUploadSucceeded = true;
+    Serial.printf("Manual firmware upload complete: %u bytes\n",
+                  static_cast<unsigned>(manualUploadWritten));
+    return;
+  }
+
+  if (upload.status == UPLOAD_FILE_ABORTED) {
+    failManualFirmwareUpload("上传被中断");
+  }
+}
+
+void NetworkManager::handleManualFirmwareUploadComplete() {
+  webServer.sendHeader("Cache-Control", "no-store");
+  if (!manualUploadSucceeded) {
+    const String error = manualUploadError.isEmpty() ? String("未收到完整固件")
+                                                      : manualUploadError;
+    webServer.send(400, "text/html; charset=utf-8",
+                   buildStatusPage("手动上传失败：" + error));
+    return;
+  }
+
+  String page = F("<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">");
+  page += F("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
+  page += F("<title>固件上传成功</title></head><body style=\"font-family:sans-serif;padding:28px\">");
+  page += F("<h2>固件上传成功</h2><p>已写入 ");
+  page += String(manualUploadWritten);
+  page += F(" bytes，设备将在 2 秒内重启。重启后请重新连接配置页。</p></body></html>");
+  webServer.send(200, "text/html; charset=utf-8", page);
+  manualRebootAt = millis() + 1800UL;
+}
+
+void NetworkManager::failManualFirmwareUpload(const String& message) {
+  if (manualUploadActive) {
+    Update.abort();
+  }
+  manualUploadActive = false;
+  manualUploadSucceeded = false;
+  manualUploadError = message;
+  Serial.printf("Manual firmware upload failed: %s\n", message.c_str());
 }
 
 bool NetworkManager::applyOtaChannelSelection(String& message) {
@@ -518,7 +660,9 @@ void NetworkManager::handleTftBitmap() {
   NavState empty;
   const NavState& state = navigationState ? *navigationState : empty;
   const unsigned long silenceMs = state.lastPacketAt == 0 ? ULONG_MAX : millis() - state.lastPacketAt;
-  if (!tftPreview.sendBmp(webServer, state, isConnected(), silenceMs)) {
+  const bool dataConnected = isConnected() ||
+                             (bleReceiver != nullptr && bleReceiver->isConnected());
+  if (!tftPreview.sendBmp(webServer, state, dataConnected, silenceMs)) {
     webServer.send(503, "text/plain; charset=utf-8", "TFT preview framebuffer unavailable");
   }
 }
@@ -557,7 +701,7 @@ bool NetworkManager::shouldRedirectToPortal() {
 
 String NetworkManager::buildStatusPage(const String& message) const {
   String page;
-  page.reserve(26000);
+  page.reserve(30000);
   page += F("<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">");
   page += F("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
   page += F("<title>AMap ESP32 配置</title><style>");
@@ -572,7 +716,7 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += F("button:disabled{background:#9aa5b1;cursor:not-allowed}button.secondary{background:#687385}.hint{font-size:13px;color:#637083;line-height:1.5}.notes{white-space:pre-wrap;font-weight:500;line-height:1.5}");
   page += F(".dev-title{display:flex;justify-content:space-between;align-items:center;gap:12px}.dev-tag{font:700 11px/1 monospace;letter-spacing:.08em;color:#3c6eaf}.toggle{display:flex;align-items:center;gap:9px;font-weight:650}.toggle input{width:auto;accent-color:#1769e0}.tft-shell{margin-top:16px;padding:18px;border-radius:26px;background:#14171b;box-shadow:inset 0 0 0 2px #343a41,inset 0 0 0 7px #080a0c,0 18px 38px rgba(5,12,20,.28)}.tft-glass{position:relative;overflow:hidden;width:100%;aspect-ratio:4/3;background:#000;border-radius:4px;box-shadow:0 0 0 1px #000,0 0 24px rgba(75,220,255,.08)}.tft-glass:after{content:'';pointer-events:none;position:absolute;inset:0;background:linear-gradient(115deg,rgba(255,255,255,.035),transparent 28%,transparent 72%,rgba(255,255,255,.018));mix-blend-mode:screen}.tft-canvas{display:block;width:100%;height:100%;image-rendering:pixelated}.tft-caption{display:flex;justify-content:space-between;gap:12px;margin-top:11px;color:#657184;font:700 11px/1.4 ui-monospace,'Cascadia Code',monospace}.tft-caption span:last-child{text-align:right}.tft-live{color:#087443}.tft-stale{color:#b45309}");
   page += F(".progress{margin-top:4px}.progress-track{height:10px;background:#e3eaf5;border-radius:999px;overflow:hidden}.progress-bar{height:100%;width:0;background:#1769e0;transition:width .2s ease}.progress-meta{display:flex;justify-content:space-between;gap:12px;margin-top:8px;font-size:13px;color:#4d5b6c}</style></head><body><main>");
-  page += F("<h1>AMap ESP32 配置</h1><p class=\"sub\">网络状态、配网页面与 OTA 工具。</p>");
+  page += F("<h1>AMap ESP32 配置</h1><p class=\"sub\">Wi-Fi、BLE、显示预览与固件工具。</p>");
 
   const String visibleMessage = message.isEmpty() ? portalMessage : message;
   if (!visibleMessage.isEmpty()) {
@@ -600,6 +744,14 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += htmlEscape(isConnected() ? WiFi.localIP().toString() : String("未连接"));
   page += F("</div><div class=\"k\">UDP 端口</div><div id=\"udpPort\" class=\"v\">");
   page += String(AMAP_UDP_PORT);
+  page += F("</div><div class=\"k\">BLE 状态</div><div id=\"bleStatus\" class=\"v ");
+  page += bleReceiver != nullptr && bleReceiver->isConnected() ? F("ok") : F("");
+  page += F("\">");
+  page += bleReceiver != nullptr && bleReceiver->isConnected() ? F("已连接") : F("等待连接");
+  page += F("</div><div class=\"k\">BLE 名称</div><div id=\"bleName\" class=\"v\">");
+  page += bleReceiver != nullptr ? htmlEscape(bleReceiver->deviceName()) : String("未初始化");
+  page += F("</div><div class=\"k\">配对记录</div><div id=\"bleBondCount\" class=\"v\">");
+  page += bleReceiver != nullptr ? String(bleReceiver->bondCount()) : String("0");
   page += F("</div><div class=\"k\">配网热点</div><div id=\"portalSsid\" class=\"v\">");
   page += isConfigPortalActive() ? htmlEscape(portalSsidName) : String("未启用");
   page += F("</div><div class=\"k\">配网页面</div><div id=\"portalUrl\" class=\"v\">");
@@ -620,11 +772,16 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += F("<button class=\"secondary\" type=\"submit\">清除已保存的 Wi-Fi</button>");
   page += F("</form><p class=\"hint\">清除后将回退到 Config.h 中的兜底 Wi-Fi；如果没有可用兜底配置，则保持在 AP 配网模式。</p></section>");
 
+  page += F("<section class=\"panel\"><h2 style=\"font-size:18px;margin:0 0 8px\">BLE 管理</h2>");
+  page += F("<form method=\"post\" action=\"/ble/clear\" onsubmit=\"return confirm('清除全部 BLE 配对记录并断开当前连接？')\">");
+  page += F("<button class=\"secondary\" type=\"submit\">清除 BLE 配对设备</button></form>");
+  page += F("<p class=\"hint\">当前版本使用免配对 GATT，通常不会保存 bond，因此数量一般为 0。此操作仍会删除全部 NimBLE bond、断开当前客户端并重新广播，Android 会自动重连。</p></section>");
+
   page += F("<section class=\"panel\"><div class=\"dev-title\"><h2 style=\"font-size:18px;margin:0\">开发者选项</h2><span class=\"dev-tag\">TFT LAB</span></div>");
   page += F("<form method=\"post\" action=\"/developer/preview\"><label class=\"toggle\"><input type=\"checkbox\" name=\"enabled\" value=\"1\"");
   page += developerPreviewEnabled ? F(" checked") : F("");
   page += F(">启用 SPI TFT 模拟显示</label><button class=\"secondary\" type=\"submit\">保存开发者选项</button></form>");
-  page += F("<p class=\"hint\">硬件数字孪生严格使用 ST7789 320×240 横屏的实际坐标、RGB565 色板和渲染优先级；显示内容来自最近一次成功解析的 UDP JSON，不改变 OLED 输出。</p>");
+  page += F("<p class=\"hint\">硬件数字孪生严格使用 ST7789 320×240 横屏的实际坐标、RGB565 色板和渲染优先级；显示内容来自最近一次成功解析的 UDP/BLE JSON，不改变 OLED 输出。</p>");
   page += F("<div id=\"tftPreview\" class=\"tft-shell\"");
   page += developerPreviewEnabled ? F("") : F(" style=\"display:none\"");
   page += F("><div class=\"tft-glass\"><img id=\"tftFrame\" class=\"tft-canvas\" src=\"/tft.bmp\" alt=\"ST7789 320x240 hardware frame\"></div><div class=\"tft-caption\"><span>ST7789 · 320×240 · ROTATION 1</span><span id=\"tftFreshness\" class=\"tft-stale\">等待 UDP</span></div></div></section>");
@@ -664,17 +821,24 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += F("<input id=\"otaUpgradeChannel\" type=\"hidden\" name=\"channel\" value=\"");
   page += otaManager ? htmlEscape(otaManager->selectedChannel()) : String("stable");
   page += F("\"><button type=\"submit\">立即升级</button></form>");
-  page += F("<p class=\"hint\">所选更新渠道可以与当前运行固件的渠道不同。更新为手动触发；manifest 与固件 URL 遇到重定向时会自动跟随。</p></section>");
+  page += F("<p class=\"hint\">所选更新渠道可以与当前运行固件的渠道不同。更新为手动触发；manifest 与固件 URL 遇到重定向时会自动跟随。</p>");
+  page += F("<hr style=\"border:0;border-top:1px solid #dce3ee;margin:20px 0\"><h3 style=\"font-size:16px;margin:0 0 8px\">手动上传固件</h3>");
+  page += F("<form method=\"post\" action=\"/firmware/upload?confirm=1\" enctype=\"multipart/form-data\" onsubmit=\"return confirm('确认写入所选固件并重启设备？请勿在上传过程中断电。')\">");
+  page += F("<input type=\"file\" name=\"firmware\" accept=\".bin,application/octet-stream\" required><button type=\"submit\">上传并安装 .bin</button></form>");
+  page += F("<p class=\"hint\">仅接受 ESP32 应用固件 .bin，最大可用空间约 ");
+  page += String(ESP.getFreeSketchSpace() / 1024U);
+  page += F(" KB。上传完成后设备自动重启；该方式不校验远端 manifest 或 SHA256，请只使用可信固件。配置页没有额外登录验证，请仅在可信 Wi-Fi 上使用；若启用 AP 配网，请为热点设置密码。</p></section>");
 
   page += F("<script>(function(){function e(i){return document.getElementById(i)}function t(i,v){var n=e(i);if(n)n.textContent=v||''}function sc(){var c=e('otaChannelSelect');var h=e('otaUpgradeChannel');if(c&&h)h.value=c.value||'stable'}function bc(){var c=e('otaChannelSelect');if(!c||c.dataset.bound)return;c.dataset.bound='1';c.addEventListener('change',function(){c.dataset.dirty='1';c.dataset.pending=c.value||'stable';sc()});c.addEventListener('input',function(){c.dataset.dirty='1';c.dataset.pending=c.value||'stable';sc()});sc()}");
   page += F("function d(v,f){return v===undefined||v===null||v===''?f:v}function tc(s){return s===10?'#666':s===0?'#2196f3':s===1?'#1abf54':s===2?'#ffd600':s===3?'#ff1744':s===4?'#b71c1c':s===5?'#007d5d':'#333'}function tm(n){var x=(n||{}).tmc||{},a=x.segments||[],b=e('tftTmcSegments'),m=e('tftTmcMarker'),l=e('tftTmcLabel');if(!b)return;b.textContent='';if(!a.length||!(x.totalDistance>0)){if(l)l.textContent='等待数据';if(m)m.style.display='none';return}var sum=0;for(var i=0;i<a.length;i++)sum+=Math.max(0,Number(a[i].distance)||0);if(!(sum>0))sum=x.totalDistance;for(var j=0;j<a.length;j++){var q=document.createElement('i');q.style.flex=String(Math.max(0,Number(a[j].distance)||0));q.style.background=tc(Number(a[j].status));b.appendChild(q)}var p=Math.max(0,Math.min(100,(Number(x.finishDistance)||0)/Number(x.totalDistance)*100));if(m){m.style.left=String(p)+'%';m.style.display='block'}if(l)l.textContent=String(a.length)+' 段 · '+Math.round(p)+'%'}function pv(n){n=n||{};if(!n.active){t('tftMode','WAIT');t('tftRoad','等待 UDP JSON');t('tftSpeed','--');t('tftArrow','·');t('tftTurn','尚未接收到有效导航帧');t('tftNext','请从 Android 转发器发送测试帧');t('tftEta','--');t('tftDestination','--');t('tftGuide','--');t('tftTraffic','--');t('tftAlert','等待 UDP JSON');var z=e('tftProgress');if(z)z.style.width='0%';tm({});return}var r=n.route||{},g=n.guide||{},ri=n.roadInfo||{},u=n.turn||{},s=n.speed||{};var icon=Number(u.icon||0),a=(icon===2||icon===4||icon===6||icon===18)?'←':((icon===8)?'↻':((icon===3||icon===5||icon===7||icon===19)?'→':'↑'));t('tftMode',String(d(n.mode,'nav')).toUpperCase());t('tftRoad',d(n.road,'--'));t('tftSpeed',s.current>=0?s.current:'--');t('tftArrow',a);t('tftTurn',d((d(u.text,'直行'))+' '+d(u.distanceText,''),'直行'));t('tftNext',d(u.road,'--'));t('tftEta',(d((n.eta||{}).remainTimeText,'--'))+' · '+d((n.eta||{}).remainDistanceText,'--'));t('tftDestination',d(r.destination,'--'));t('tftGuide',d(g.exitName?g.exitName+(g.exitDirection?' · '+g.exitDirection:''):(g.serviceAreaName?'服务区 '+g.serviceAreaName+' '+d(g.serviceAreaDistance,''):'--'),'--'));t('tftTraffic',(d(ri.type,'--'))+(ri.traffic?' · '+ri.traffic:'')+(ri.crossMap?' · 路口放大图':''));t('tftAlert',d(n.alert,d(n.lightText,'--')));var p=Number(r.progressPercent);if(!(p>=0&&p<=100))p=0;var b=e('tftProgress');if(b)b.style.width=String(p)+'%';tm(n)}");
   page += F("function poll(){fetch('/status.json',{cache:'no-store'}).then(function(r){return r.ok?r.json():null}).then(function(s){if(!s)return;");
   page += F("var w=e('wifiStatus');if(w){w.textContent=s.wifiStatus||'';w.className='v '+(s.connected?'ok':'bad')}");
   page += F("t('currentSsid',s.ssid||'未配置');t('credentialSource',s.source||'none');t('staIp',s.staIp||'未连接');t('udpPort',String(s.udpPort||''));");
+  page += F("var bs=e('bleStatus');if(bs){bs.textContent=s.bleConnected?'已连接':'等待连接';bs.className='v '+(s.bleConnected?'ok':'')}t('bleName',s.bleName||'未初始化');t('bleBondCount',String(s.bleBondCount||0));");
   page += F("t('portalSsid',s.portalActive?s.portalSsid:'未启用');t('portalUrl',s.portalActive?s.portalUrl:(s.staIp?('http://'+s.staIp+'/'):'未连接'));");
   page += F("if(s.ota){t('otaCurrent',s.ota.currentVersion+' build '+s.ota.currentBuild);t('otaChannel',s.ota.currentChannel);t('otaSelectedChannel',s.ota.selectedChannel||'');t('otaLatest',s.ota.latestBuildInfo||'未检查');t('otaStatus',s.ota.status);t('otaNotes',s.ota.changelog||s.ota.releaseNotes||'');t('otaError',s.ota.lastError||'');var c=e('otaChannelSelect');if(c&&s.ota.selectedChannel)c.value=s.ota.selectedChannel;var h=document.querySelector('form[action=\"/ota/upgrade\"] input[name=\"channel\"]');if(h&&s.ota.selectedChannel)h.value=s.ota.selectedChannel}");
   page += F("if(s.ota){var pb=e('otaProgressBar');if(pb)pb.style.width=String(s.ota.progressPercent||0)+'%';t('otaProgressText',s.ota.progressText||'未开始');t('otaProgressPercent',String(s.ota.progressPercent||0)+'%');var busy=!!s.ota.busy;var cb=document.querySelector('form[action=\"/ota/check\"] button');if(cb)cb.disabled=busy;var ub=document.querySelector('form[action=\"/ota/upgrade\"] button');if(ub)ub.disabled=busy;}");
-  page += F("if(s.developerPreview){var tf=e('tftFreshness'),n=s.nav||{},age=Number(n.packetAgeMs),cfg=s.tft||{},stale=Number(cfg.staleMs)||3000,wait=Number(cfg.standbyMs)||10000;if(tf){if(!s.connected){tf.textContent='Wi-Fi disconnected';tf.className='tft-stale'}else if(!n.active||age<0||age>wait){tf.textContent='waiting for navigation';tf.className='tft-stale'}else if(age>stale){tf.textContent='phone data stale '+age+'ms';tf.className='tft-stale'}else{tf.textContent='UDP live · '+age+'ms';tf.className='tft-live'}}}");
+  page += F("if(s.developerPreview){var tf=e('tftFreshness'),n=s.nav||{},age=Number(n.packetAgeMs),cfg=s.tft||{},stale=Number(cfg.staleMs)||3000,wait=Number(cfg.standbyMs)||10000,data=!!(s.connected||s.bleConnected);if(tf){if(!data){tf.textContent='waiting for UDP/BLE';tf.className='tft-stale'}else if(!n.active||age<0||age>wait){tf.textContent='waiting for navigation';tf.className='tft-stale'}else if(age>stale){tf.textContent='phone data stale '+age+'ms';tf.className='tft-stale'}else{tf.textContent=(s.bleConnected?'BLE':'UDP')+' live · '+age+'ms';tf.className='tft-live'}}}");
   page += F("var c2=e('otaChannelSelect');if(c2&&c2.dataset.dirty&&c2.dataset.pending){if(s.ota&&c2.dataset.pending===s.ota.selectedChannel){c2.dataset.dirty='';c2.dataset.pending=''}else{c2.value=c2.dataset.pending;sc()}}");
   page += F("var p=e('errorPanel');var l=e('lastError');if(p&&l){l.textContent=s.lastError||'';p.style.display=s.lastError?'':'none'}}).catch(function(){})}");
   page += F("bc();setInterval(poll,800);setTimeout(poll,200)})();</script>");
@@ -731,6 +895,13 @@ String NetworkManager::buildStatusJson() const {
   json += ",\"portalUrl\":\"" + jsonEscape(configPortalUrl()) + "\"";
   json += ",\"udpPort\":";
   json += String(AMAP_UDP_PORT);
+  json += ",\"bleConnected\":";
+  json += bleReceiver != nullptr && bleReceiver->isConnected() ? "true" : "false";
+  json += ",\"bleName\":\"";
+  json += jsonEscape(bleReceiver != nullptr ? bleReceiver->deviceName() : String(""));
+  json += "\"";
+  json += ",\"bleBondCount\":";
+  json += String(bleReceiver != nullptr ? bleReceiver->bondCount() : 0);
   json += ",\"lastError\":\"" + jsonEscape(lastError) + "\"";
   json += ",\"developerPreview\":";
   json += developerPreviewEnabled ? "true" : "false";

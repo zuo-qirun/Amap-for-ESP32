@@ -51,6 +51,10 @@ void DisplayRenderer::renderStandby(const String& message, bool wifiConnected,
   drawClipped(0, 44, width, bleConnected ? "BLE connected" : String("UDP :") + port);
   if (wifiConnected) {
     drawClipped(0, 60, width, "IP " + ip);
+  } else if (bleConnected && ip != "0.0.0.0") {
+    // BLE can be active while the device exposes the AP configuration portal.
+    // Keep that address visible instead of hiding it behind "WiFi optional".
+    drawClipped(0, 60, width, "IP " + ip);
   } else if (bleConnected) {
     drawClipped(0, 60, width, "WiFi optional");
   } else if (ip != "0.0.0.0") {
@@ -292,8 +296,13 @@ String DisplayRenderer::guideText(const NavState& state) const {
            (state.guide.exitDirection.isEmpty() ? "" : " " + state.guide.exitDirection);
   }
   if (!state.guide.serviceAreaName.isEmpty()) {
-    return "服务区 " + state.guide.serviceAreaName +
-           (state.guide.serviceAreaDistance.isEmpty() ? "" : " " + state.guide.serviceAreaDistance);
+    String out = "服务区 " + state.guide.serviceAreaName +
+                 (state.guide.serviceAreaDistance.isEmpty() ? "" : " " + state.guide.serviceAreaDistance);
+    if (!state.guide.nextServiceAreaName.isEmpty()) {
+      out += "  下一 " + state.guide.nextServiceAreaName +
+             (state.guide.nextServiceAreaDistance.isEmpty() ? "" : " " + state.guide.nextServiceAreaDistance);
+    }
+    return out;
   }
   return "";
 }

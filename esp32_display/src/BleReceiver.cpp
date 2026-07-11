@@ -125,6 +125,29 @@ String BleReceiver::deviceName() const {
   return advertisedName;
 }
 
+int BleReceiver::bondCount() const {
+  return server == nullptr ? 0 : NimBLEDevice::getNumBonds();
+}
+
+int BleReceiver::clearBondedDevices() {
+  if (server == nullptr) {
+    return 0;
+  }
+  const int removed = NimBLEDevice::getNumBonds();
+  const std::vector<uint16_t> peers = server->getPeerDevices();
+  for (uint16_t connectionId : peers) {
+    server->disconnect(connectionId);
+  }
+  NimBLEDevice::deleteAllBonds();
+  resetFrame();
+  if (peers.empty()) {
+    NimBLEDevice::startAdvertising();
+  }
+  Serial.printf("BLE bonds cleared: removed=%d disconnected=%u\n",
+                removed, static_cast<unsigned>(peers.size()));
+  return removed;
+}
+
 void BleReceiver::handleConnect() {
   connected = true;
   resetFrame();

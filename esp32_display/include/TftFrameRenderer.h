@@ -11,11 +11,13 @@
 class TftFrameRenderer {
 public:
   static void render(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
-                     const NavState& state, bool wifiConnected, unsigned long silenceMs);
+                     const NavState& state, bool wifiConnected, bool bleConnected,
+                     const String& ip, uint16_t port, unsigned long silenceMs);
 
 private:
   static void renderStandby(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
-                            const String& title, const String& detail);
+                            const String& title, const String& detail, bool wifiConnected,
+                            bool bleConnected, const String& ip, uint16_t port);
   static void renderNavigation(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                                const NavState& state);
   static void renderCruise(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,

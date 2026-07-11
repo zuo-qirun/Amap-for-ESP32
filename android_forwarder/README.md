@@ -14,6 +14,7 @@
 - `AMapStateAggregator.java`：维护完整导航状态快照。
 - `LaneInfoParser.java`：把高德车道广播解析成 `lanes/advised` 数组。
 - `TrafficLightParser.java`：把红绿灯倒计时解析成简化数组。
+- `ServiceAreaParser.java`：兼容 `SAPA_*`、数组及 JSON 形式的当前/下一服务区信息。
 - `Esp32Protocol.java`：生成协议 v1 JSON。
 - `Esp32UdpForwarder.java`：节流、心跳和 UDP 发送。
 - `Esp32Transport.java` / `UdpTransport.java` / `BleTransport.java`：UDP/BLE 传输层；BLE 自动扫描开发板并协商 MTU。
@@ -51,6 +52,16 @@ com.autonavi.amapauto.AUTO_WIDGET_UPDATE_CRUISE_TRAFFIC_LIGHT_INFO
 2. 点击“发送测试帧”。
 3. ESP32 OLED 和串口应显示测试导航数据。
 4. 再打开高德地图车机版导航或巡航，观察 App 内“最近广播 / 最近发送 / Payload / 最近错误”。
+
+## 巡航红绿灯与服务区数据来源
+
+- 导航态红绿灯和服务区来自高德的 `AUTONAVI_STANDARD_BROADCAST_SEND` 广播。
+- 巡航态红绿灯属于高德内部 `CameraLightInfoWrapper`，原版通常不会完整对外广播。需使用
+  `amap-cruise-wrapper-skill` 修改对应版本的高德车机 APK，使其发送 `lightsData`、
+  `lightsCount`、`clearLights`；转发器会将 wrapper 的 `0=红、1=绿` 归一化为 ESP32 协议状态。
+- 服务区优先读取 `SAPA_NAME/SAPA_DIST(_AUTO)` 和 `NEXT_SAPA_*`，也兼容
+  `SAPA_LIST`、`serviceAreas`、名称/距离数组以及 JSON 列表。收到空列表时会清除旧信息。
+- ESP32 收到完整快照后，巡航页显示最多四路红绿灯；导航页底部显示最近服务区，文本轮播中还会显示下一服务区。
 
 常见错误：
 

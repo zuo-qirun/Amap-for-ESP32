@@ -26,15 +26,58 @@ void DisplayRenderer::render(const NavState& state, bool wifiConnected, bool ble
   u8g2.clearBuffer();
   if (!wifiConnected && !bleConnected) {
     renderNetwork(false, ip, port);
-  } else if (silenceMs > AMAP_STANDBY_MS || !state.active) {
-    renderStandby(silenceMs > AMAP_STANDBY_MS ? "等待手机连接" : "等待导航数据",
+  } else if (silenceMs > AMAP_STANDBY_MS) {
+    renderStandby("等待手机连接",
                   wifiConnected, bleConnected, ip, port);
   } else if (silenceMs > AMAP_STALE_MS) {
     renderStandby("等待手机数据", wifiConnected, bleConnected, ip, port);
+  } else if (!state.active && state.music.active) {
+    renderMusic(state.music);
+  } else if (!state.active) {
+    renderStandby("等待导航或音乐", wifiConnected, bleConnected, ip, port);
   } else {
     renderNav(state, silenceMs);
   }
   u8g2.sendBuffer();
+}
+
+void DisplayRenderer::renderMusic(const MusicState& music) {
+  const int width = u8g2.getDisplayWidth();
+  const int height = u8g2.getDisplayHeight();
+  const bool tall = height >= 96;
+
+  setTextFont();
+  drawClipped(0, 12, width, music.title.isEmpty() ? "网易云音乐" : music.title);
+  setSmallFont();
+  drawClipped(0, 25, width, (music.playing ? "播放中 " : "已暂停 ") + music.artist);
+
+  setTextFont();
+  String visibleLyric = music.highlightedLyric.isEmpty()
+                            ? music.lyric : music.highlightedLyric;
+  drawClipped(0, 42, width, visibleLyric.isEmpty() ? "暂无歌词" : visibleLyric);
+  if (tall) {
+    setSmallFont();
+    if (!music.translatedLyric.isEmpty()) {
+      drawClipped(0, 58, width, music.translatedLyric);
+    }
+    drawClipped(0, 75, width, music.nextLyric);
+  }
+
+  const int progressY = tall ? 91 : 50;
+  u8g2.drawFrame(0, progressY, width, 5);
+  if (music.durationMs > 0) {
+    const int64_t bounded = min<int64_t>(max<int64_t>(0, music.positionMs), music.durationMs);
+    const int filled = static_cast<int>(bounded * (width - 2) / music.durationMs);
+    if (filled > 0) {
+      u8g2.drawBox(1, progressY + 1, filled, 3);
+    }
+  }
+  setSmallFont();
+  drawClipped(0, tall ? 108 : 63, width,
+              formatTime(music.positionMs) + " / " + formatTime(music.durationMs));
+  if (tall && !music.album.isEmpty()) {
+    drawClipped(0, 124, width, music.album);
+  }
 }
 
 void DisplayRenderer::renderNetwork(bool wifiConnected, const String& ip, uint16_t port) {
@@ -101,10 +144,15 @@ void DisplayRenderer::renderNav(const NavState& state, unsigned long silenceMs) 
   }
   drawClipped(0, yEta, width, eta);
 
-  String bottom = bottomText(state);
+  String navLyric = state.music.highlightedLyric.isEmpty()
+                        ? state.music.lyric : state.music.highlightedLyric;
+  String bottom = state.music.active && !navLyric.isEmpty()
+                      ? navLyric
+                      : bottomText(state);
   if (!bottom.isEmpty()) {
     setSmallFont();
-    bool showingCamera = !cameraText(state).isEmpty() && bottom == cameraText(state);
+    bool showingCamera = !state.music.active && !cameraText(state).isEmpty() &&
+                         bottom == cameraText(state);
     if (showingCamera) {
       drawCameraIcon(state.camera.type, 0, yBottom - 11);
     }
@@ -112,7 +160,9 @@ void DisplayRenderer::renderNav(const NavState& state, unsigned long silenceMs) 
   }
 
   if (tall) {
-    if (!state.alert.isEmpty()) {
+    if (state.music.active && !state.music.translatedLyric.isEmpty()) {
+      drawClipped(0, 92, width, state.music.translatedLyric);
+    } else if (!state.alert.isEmpty()) {
       drawClipped(0, 92, width, state.alert);
     }
     if (!state.detail.isEmpty()) {
@@ -349,4 +399,18 @@ String DisplayRenderer::bottomText(const NavState& state) const {
     }
   }
   return "";
+}
+
+String DisplayRenderer::formatTime(int64_t milliseconds) const {
+  if (milliseconds < 0) {
+    return "--:--";
+  }
+  const int64_t totalSeconds = milliseconds / 1000;
+  const int minutes = static_cast<int>(totalSeconds / 60);
+  const int seconds = static_cast<int>(totalSeconds % 60);
+  String result = String(minutes) + ":";
+  if (seconds < 10) {
+    result += "0";
+  }
+  return result + String(seconds);
 }

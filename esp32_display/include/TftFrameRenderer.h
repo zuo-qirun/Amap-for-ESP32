@@ -6,7 +6,7 @@
 
 #include "NavState.h"
 
-// Draws the logical ST7789 frame onto any Adafruit_GFX-compatible target.
+// Draws the logical 320x240 frame onto any Adafruit_GFX-compatible target.
 // The hardware display and browser preview deliberately share this renderer.
 class TftFrameRenderer {
 public:
@@ -22,6 +22,10 @@ private:
                                const NavState& state);
   static void renderCruise(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                            const NavState& state);
+  static void renderMusic(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
+                          const MusicState& music);
+  static void drawMusicOverlay(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
+                               const MusicState& music);
   static void drawShell(Adafruit_GFX& display);
   static void drawNavigationInfo(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                                  const NavState& state, int16_t top);
@@ -31,6 +35,16 @@ private:
                        const String& text, uint16_t color);
   static void drawClipped(U8G2_FOR_ADAFRUIT_GFX& font, int16_t x, int16_t baseline,
                           int16_t maxWidth, const String& text, uint16_t color);
+  static void drawKaraokeLine(U8G2_FOR_ADAFRUIT_GFX& font, int16_t x, int16_t baseline,
+                              int16_t maxWidth, const String& text,
+                              const String& highlighted, const String& currentWord,
+                              int wordProgressPermille, uint16_t idleColor,
+                              uint16_t activeColor);
+  static void drawTimedScrollingLine(U8G2_FOR_ADAFRUIT_GFX& font, int16_t x,
+                                     int16_t baseline, int16_t maxWidth,
+                                     const String& text, int64_t positionMs,
+                                     int64_t lineStartMs, int64_t lineDurationMs,
+                                     uint16_t color);
   static void drawBig(Adafruit_GFX& display, int16_t x, int16_t top, const String& text,
                       uint8_t scale, uint16_t color);
   static void drawTurnIcon(Adafruit_GFX& display, int icon, int16_t x, int16_t y,
@@ -39,6 +53,8 @@ private:
                              uint16_t color, uint16_t background);
   static void drawCameraPill(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                              const NavState& state, int16_t x, int16_t y, int16_t width);
+  static void drawSpeedLimitSign(Adafruit_GFX& display, const NavState& state,
+                                 int16_t centerX, int16_t centerY);
   static void drawNavigationTrafficPill(Adafruit_GFX& display, const NavState& state);
   static void drawCruiseTrafficPills(Adafruit_GFX& display, const NavState& state,
                                      int16_t top);
@@ -50,4 +66,5 @@ private:
   static void drawTmc(Adafruit_GFX& display, const NavState& state, int16_t x, int16_t y,
                       int16_t width);
   static String formatCamera(const NavState& state);
+  static String formatTime(int64_t milliseconds);
 };

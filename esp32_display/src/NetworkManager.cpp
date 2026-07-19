@@ -34,6 +34,7 @@ void NetworkManager::begin(OtaManager* ota, const NavState* navigation, BleRecei
   // start, so keep power save enabled and let the coexistence scheduler work.
   WiFi.setSleep(true);
   portalSsidName = makePortalSsid();
+  hardwareSettings = HardwareSettings::load();
   loadCredentials();
   loadDeveloperOptions();
 
@@ -56,6 +57,12 @@ void NetworkManager::update() {
   const unsigned long now = millis();
   if (manualRebootAt != 0 && static_cast<long>(now - manualRebootAt) >= 0) {
     Serial.println("Manual firmware upload complete; rebooting");
+    delay(50);
+    ESP.restart();
+    return;
+  }
+  if (hardwareRebootAt != 0 && static_cast<long>(now - hardwareRebootAt) >= 0) {
+    Serial.println("Hardware settings saved; rebooting");
     delay(50);
     ESP.restart();
     return;
@@ -365,6 +372,8 @@ void NetworkManager::configureRoutes() {
   webServer.on("/ota/upgrade", HTTP_POST, [this]() { handleOtaUpgrade(); });
   webServer.on("/ota/upgrade", HTTP_GET, [this]() { redirectToRoot(); });
   webServer.on("/developer/preview", HTTP_POST, [this]() { handleDeveloperPreview(); });
+  webServer.on("/hardware/display", HTTP_POST, [this]() { handleHardwareSettings(); });
+  webServer.on("/hardware/display", HTTP_GET, [this]() { redirectToRoot(); });
   webServer.on("/ble/clear", HTTP_POST, [this]() { handleBleClear(); });
   webServer.on("/firmware/upload", HTTP_POST,
                [this]() { handleManualFirmwareUploadComplete(); },
@@ -505,6 +514,39 @@ void NetworkManager::handleDeveloperPreview() {
   webServer.sendHeader("Cache-Control", "no-store");
   webServer.send(200, "text/html; charset=utf-8",
                  buildStatusPage(developerPreviewEnabled ? "已开启 TFT 模拟显示。" : "已关闭 TFT 模拟显示。"));
+}
+
+void NetworkManager::handleHardwareSettings() {
+  HardwareSettings requested = hardwareSettings;
+  const String driver = webServer.arg("tftDriver");
+  if (driver == "st7789") {
+    requested.tftDriver = AMAP_TFT_DRIVER_ST7789;
+  } else if (driver == "ili9341") {
+    requested.tftDriver = AMAP_TFT_DRIVER_ILI9341;
+  } else {
+    webServer.send(400, "text/html; charset=utf-8",
+                   buildStatusPage("不支持的屏幕芯片选项。"));
+    return;
+  }
+  requested.touchEnabled = webServer.hasArg("touchEnabled") &&
+                           webServer.arg("touchEnabled") == "1";
+  const bool changed = requested.tftDriver != hardwareSettings.tftDriver ||
+                       requested.touchEnabled != hardwareSettings.touchEnabled;
+  if (!changed) {
+    webServer.send(200, "text/html; charset=utf-8",
+                   buildStatusPage("显示硬件设置没有变化。"));
+    return;
+  }
+  if (!requested.save()) {
+    webServer.send(500, "text/html; charset=utf-8",
+                   buildStatusPage("无法保存显示硬件设置到 NVS。"));
+    return;
+  }
+  hardwareSettings = requested;
+  webServer.sendHeader("Cache-Control", "no-store");
+  webServer.send(200, "text/html; charset=utf-8",
+                 buildStatusPage("显示硬件设置已保存，设备将在 2 秒内重启生效。"));
+  hardwareRebootAt = millis() + 1800UL;
 }
 
 void NetworkManager::handleBleClear() {
@@ -705,18 +747,19 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += F("<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">");
   page += F("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
   page += F("<title>AMap ESP32 配置</title><style>");
-  page += F("body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f7fb;color:#172033}");
-  page += F("main{max-width:680px;margin:0 auto;padding:24px 16px 40px}");
-  page += F("h1{font-size:24px;margin:0 0 6px}.sub{color:#5f6b7a;margin:0 0 18px}");
-  page += F(".panel{background:#fff;border:1px solid #dce3ee;border-radius:8px;padding:16px;margin:14px 0;box-shadow:0 1px 2px rgba(0,0,0,.04)}");
+  page += F(":root{--ink:#102033;--muted:#657184;--line:#dce3ea;--paper:#fff;--nav:#0b1726;--accent:#13a896}body{margin:0;font-family:'Segoe UI','Microsoft YaHei',sans-serif;background:#eef2f5;color:var(--ink)}");
+  page += F("main{max-width:1160px;margin:0 auto;padding:28px 22px 48px}h1{font-size:30px;letter-spacing:-.03em;margin:0 0 6px}.sub{color:var(--muted);margin:0 0 24px}");
+  page += F(".settings-layout{display:grid;grid-template-columns:220px minmax(0,1fr);gap:24px;align-items:start}.settings-sidebar{position:sticky;top:20px;background:var(--nav);border-radius:18px;padding:12px;box-shadow:0 18px 45px rgba(11,23,38,.16)}.settings-sidebar strong{display:block;color:#7de5d7;font-size:11px;letter-spacing:.14em;padding:12px 14px 8px}.nav-button{display:block;width:100%;margin:3px 0;padding:13px 14px;border:0;border-radius:11px;background:transparent;color:#aebdcb;text-align:left;font-size:15px;font-weight:700;cursor:pointer;transition:.18s ease}.nav-button:hover{background:#152d42;color:#fff}.nav-button.active{background:#13a896;color:#071d20;box-shadow:0 7px 18px rgba(19,168,150,.28)}.settings-content{min-width:0}.settings-page{display:none}.settings-page.active{display:block;animation:page-in .22s ease}.section-heading{margin:0 0 14px;font-size:22px;letter-spacing:-.02em}.section-kicker{color:#0f766e;font-size:11px;font-weight:800;letter-spacing:.15em;margin-bottom:5px}@keyframes page-in{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}");
+  page += F(".panel{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:18px;margin:14px 0;box-shadow:0 5px 18px rgba(16,32,51,.05)}");
   page += F(".grid{display:grid;grid-template-columns:130px 1fr;gap:10px 12px}.k{color:#637083}.v{font-weight:600;word-break:break-word}");
   page += F(".ok{color:#087443}.bad{color:#b42318}.msg{background:#e8f1ff;border-color:#b8d3ff}.err{background:#fff1f0;border-color:#ffccc7}");
   page += F("label{display:block;font-weight:650;margin:12px 0 6px}input,select{width:100%;box-sizing:border-box;border:1px solid #c8d2df;border-radius:6px;padding:11px;font-size:16px;background:#fff}");
   page += F("button{border:0;border-radius:6px;background:#1769e0;color:white;font-weight:700;padding:11px 14px;font-size:15px;margin-top:14px;cursor:pointer}");
   page += F("button:disabled{background:#9aa5b1;cursor:not-allowed}button.secondary{background:#687385}.hint{font-size:13px;color:#637083;line-height:1.5}.notes{white-space:pre-wrap;font-weight:500;line-height:1.5}");
   page += F(".dev-title{display:flex;justify-content:space-between;align-items:center;gap:12px}.dev-tag{font:700 11px/1 monospace;letter-spacing:.08em;color:#3c6eaf}.toggle{display:flex;align-items:center;gap:9px;font-weight:650}.toggle input{width:auto;accent-color:#1769e0}.tft-shell{margin-top:16px;padding:18px;border-radius:26px;background:#14171b;box-shadow:inset 0 0 0 2px #343a41,inset 0 0 0 7px #080a0c,0 18px 38px rgba(5,12,20,.28)}.tft-glass{position:relative;overflow:hidden;width:100%;aspect-ratio:4/3;background:#000;border-radius:4px;box-shadow:0 0 0 1px #000,0 0 24px rgba(75,220,255,.08)}.tft-glass:after{content:'';pointer-events:none;position:absolute;inset:0;background:linear-gradient(115deg,rgba(255,255,255,.035),transparent 28%,transparent 72%,rgba(255,255,255,.018));mix-blend-mode:screen}.tft-canvas{display:block;width:100%;height:100%;image-rendering:pixelated}.tft-caption{display:flex;justify-content:space-between;gap:12px;margin-top:11px;color:#657184;font:700 11px/1.4 ui-monospace,'Cascadia Code',monospace}.tft-caption span:last-child{text-align:right}.tft-live{color:#087443}.tft-stale{color:#b45309}");
-  page += F(".progress{margin-top:4px}.progress-track{height:10px;background:#e3eaf5;border-radius:999px;overflow:hidden}.progress-bar{height:100%;width:0;background:#1769e0;transition:width .2s ease}.progress-meta{display:flex;justify-content:space-between;gap:12px;margin-top:8px;font-size:13px;color:#4d5b6c}</style></head><body><main>");
+  page += F(".progress{margin-top:4px}.progress-track{height:10px;background:#e3eaf5;border-radius:999px;overflow:hidden}.progress-bar{height:100%;width:0;background:#1769e0;transition:width .2s ease}.progress-meta{display:flex;justify-content:space-between;gap:12px;margin-top:8px;font-size:13px;color:#4d5b6c}@media(max-width:760px){main{padding:18px 12px 36px}h1{font-size:25px}.settings-layout{display:block}.settings-sidebar{position:sticky;top:0;z-index:20;display:flex;gap:6px;overflow-x:auto;border-radius:12px;margin:0 0 16px;padding:7px}.settings-sidebar strong{display:none}.nav-button{width:auto;flex:0 0 auto;white-space:nowrap;margin:0;padding:10px 13px}.grid{grid-template-columns:105px 1fr}.panel{padding:15px}.tft-shell{padding:12px;border-radius:18px}}</style></head><body><main>");
   page += F("<h1>AMap ESP32 配置</h1><p class=\"sub\">Wi-Fi、BLE、显示预览与固件工具。</p>");
+  page += F("<div class=\"settings-layout\"><aside class=\"settings-sidebar\"><strong>DEVICE CONSOLE</strong><button type=\"button\" class=\"nav-button active\" data-target=\"overview\">总览</button><button type=\"button\" class=\"nav-button\" data-target=\"connection\">连接设置</button><button type=\"button\" class=\"nav-button\" data-target=\"display\">显示与设备</button><button type=\"button\" class=\"nav-button\" data-target=\"developer\">开发者选项</button></aside><div class=\"settings-content\"><section id=\"page-overview\" class=\"settings-page active\"><div class=\"section-kicker\">LIVE STATUS</div><h2 class=\"section-heading\">设备总览</h2>");
 
   const String visibleMessage = message.isEmpty() ? portalMessage : message;
   if (!visibleMessage.isEmpty()) {
@@ -744,6 +787,10 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += htmlEscape(isConnected() ? WiFi.localIP().toString() : String("未连接"));
   page += F("</div><div class=\"k\">UDP 端口</div><div id=\"udpPort\" class=\"v\">");
   page += String(AMAP_UDP_PORT);
+  page += F("</div><div class=\"k\">屏幕芯片</div><div id=\"tftDriver\" class=\"v\">");
+  page += hardwareSettings.tftDriverName();
+  page += F("</div><div class=\"k\">触摸配置</div><div id=\"touchEnabled\" class=\"v\">");
+  page += hardwareSettings.touchEnabled ? F("FT6336U 已启用") : F("无触摸");
   page += F("</div><div class=\"k\">BLE 状态</div><div id=\"bleStatus\" class=\"v ");
   page += bleReceiver != nullptr && bleReceiver->isConnected() ? F("ok") : F("");
   page += F("\">");
@@ -758,7 +805,9 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += isConfigPortalActive() ? htmlEscape(configPortalUrl())
                                  : htmlEscape(String("http://") + WiFi.localIP().toString() + "/");
   page += F("</div></div></section>");
+  page += F("</section>");
 
+  page += F("<section id=\"page-connection\" class=\"settings-page\"><div class=\"section-kicker\">NETWORK</div><h2 class=\"section-heading\">连接设置</h2>");
   page += F("<section class=\"panel\"><form method=\"post\" action=\"/save\">");
   page += F("<label for=\"ssid\">Wi-Fi 名称</label><input id=\"ssid\" name=\"ssid\" required maxlength=\"32\" value=\"");
   page += htmlEscape(activeSsid);
@@ -771,20 +820,40 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += F("<section class=\"panel\"><form method=\"post\" action=\"/clear\">");
   page += F("<button class=\"secondary\" type=\"submit\">清除已保存的 Wi-Fi</button>");
   page += F("</form><p class=\"hint\">清除后将回退到 Config.h 中的兜底 Wi-Fi；如果没有可用兜底配置，则保持在 AP 配网模式。</p></section>");
+  page += F("</section>");
+
+  page += F("<section id=\"page-display\" class=\"settings-page\"><div class=\"section-kicker\">HARDWARE</div><h2 class=\"section-heading\">显示与设备</h2>");
+  page += F("<section class=\"panel\"><h2 style=\"font-size:18px;margin:0 0 8px\">显示硬件</h2>");
+  page += F("<form method=\"post\" action=\"/hardware/display\" onsubmit=\"return confirm('保存后设备会自动重启，确认继续？')\">");
+  page += F("<label for=\"tftDriverSelect\">屏幕控制芯片</label><select id=\"tftDriverSelect\" name=\"tftDriver\">");
+  page += F("<option value=\"st7789\"");
+  page += hardwareSettings.tftDriver == AMAP_TFT_DRIVER_ST7789 ? F(" selected") : F("");
+  page += F(">ST7789V</option><option value=\"ili9341\"");
+  page += hardwareSettings.tftDriver == AMAP_TFT_DRIVER_ILI9341 ? F(" selected") : F("");
+  page += F(">ILI9341V</option></select>");
+  page += F("<label class=\"toggle\"><input type=\"checkbox\" name=\"touchEnabled\" value=\"1\"");
+  page += hardwareSettings.touchEnabled ? F(" checked") : F("");
+  page += F(">启用 FT6336U 电容触摸</label>");
+  page += F("<button type=\"submit\">保存显示硬件并重启</button></form>");
+  page += F("<p class=\"hint\">屏幕芯片与触摸控制器都在开机阶段初始化，因此修改后必须重启。无触摸屏请关闭触摸，以免占用 GPIO8、GPIO9、GPIO17、GPIO18。</p></section>");
 
   page += F("<section class=\"panel\"><h2 style=\"font-size:18px;margin:0 0 8px\">BLE 管理</h2>");
   page += F("<form method=\"post\" action=\"/ble/clear\" onsubmit=\"return confirm('清除全部 BLE 配对记录并断开当前连接？')\">");
   page += F("<button class=\"secondary\" type=\"submit\">清除 BLE 配对设备</button></form>");
   page += F("<p class=\"hint\">当前版本使用免配对 GATT，通常不会保存 bond，因此数量一般为 0。此操作仍会删除全部 NimBLE bond、断开当前客户端并重新广播，Android 会自动重连。</p></section>");
+  page += F("</section>");
 
-  page += F("<section class=\"panel\"><div class=\"dev-title\"><h2 style=\"font-size:18px;margin:0\">开发者选项</h2><span class=\"dev-tag\">TFT LAB</span></div>");
+  page += F("<section id=\"page-developer\" class=\"settings-page\"><div class=\"section-kicker\">FIRMWARE & LAB</div><h2 class=\"section-heading\">开发者选项</h2>");
+  page += F("<section id=\"developerPreviewPanel\" class=\"panel\"><div class=\"dev-title\"><h2 style=\"font-size:18px;margin:0\">开发者选项</h2><span class=\"dev-tag\">TFT LAB</span></div>");
   page += F("<form method=\"post\" action=\"/developer/preview\"><label class=\"toggle\"><input type=\"checkbox\" name=\"enabled\" value=\"1\"");
   page += developerPreviewEnabled ? F(" checked") : F("");
   page += F(">启用 SPI TFT 模拟显示</label><button class=\"secondary\" type=\"submit\">保存开发者选项</button></form>");
-  page += F("<p class=\"hint\">硬件数字孪生严格使用 ST7789 320×240 横屏的实际坐标、RGB565 色板和渲染优先级；显示内容来自最近一次成功解析的 UDP/BLE JSON，不改变 OLED 输出。</p>");
+  page += F("<p class=\"hint\">硬件数字孪生使用 320×240 横屏的实际坐标、RGB565 色板和渲染优先级；显示内容来自最近一次成功解析的 UDP/BLE JSON，不改变 OLED 输出。</p>");
   page += F("<div id=\"tftPreview\" class=\"tft-shell\"");
   page += developerPreviewEnabled ? F("") : F(" style=\"display:none\"");
-  page += F("><div class=\"tft-glass\"><img id=\"tftFrame\" class=\"tft-canvas\" src=\"/tft.bmp\" alt=\"ST7789 320x240 hardware frame\"></div><div class=\"tft-caption\"><span>ST7789 · 320×240 · ROTATION 1</span><span id=\"tftFreshness\" class=\"tft-stale\">等待 UDP</span></div></div></section>");
+  page += F("><div class=\"tft-glass\"><img id=\"tftFrame\" class=\"tft-canvas\" src=\"/tft.bmp\" alt=\"320x240 hardware frame\"></div><div class=\"tft-caption\"><span>");
+  page += hardwareSettings.tftDriverName();
+  page += F(" · 320×240 · ROTATION 1</span><span id=\"tftFreshness\" class=\"tft-stale\">等待 UDP</span></div></div></section>");
 
   page += F("<section class=\"panel\"><h2 style=\"font-size:18px;margin:0 0 12px\">OTA 更新</h2><div class=\"grid\">");
   page += F("<div class=\"k\">当前版本</div><div id=\"otaCurrent\" class=\"v\">");
@@ -828,8 +897,9 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += F("<p class=\"hint\">仅接受 ESP32 应用固件 .bin，最大可用空间约 ");
   page += String(ESP.getFreeSketchSpace() / 1024U);
   page += F(" KB。上传完成后设备自动重启；该方式不校验远端 manifest 或 SHA256，请只使用可信固件。配置页没有额外登录验证，请仅在可信 Wi-Fi 上使用；若启用 AP 配网，请为热点设置密码。</p></section>");
+  page += F("</section></div></div>");
 
-  page += F("<script>(function(){function e(i){return document.getElementById(i)}function t(i,v){var n=e(i);if(n)n.textContent=v||''}function sc(){var c=e('otaChannelSelect');var h=e('otaUpgradeChannel');if(c&&h)h.value=c.value||'stable'}function bc(){var c=e('otaChannelSelect');if(!c||c.dataset.bound)return;c.dataset.bound='1';c.addEventListener('change',function(){c.dataset.dirty='1';c.dataset.pending=c.value||'stable';sc()});c.addEventListener('input',function(){c.dataset.dirty='1';c.dataset.pending=c.value||'stable';sc()});sc()}");
+  page += F("<script>(function(){function e(i){return document.getElementById(i)}var mobile=location.search.indexOf('mobile=1')>=0;if(mobile){var dp=e('developerPreviewPanel');if(dp)dp.remove();var sub=document.querySelector('.sub');if(sub)sub.textContent='手机端设备控制 · TFT 模拟显示已隐藏'}function nav(){var bs=document.querySelectorAll('.nav-button');for(var i=0;i<bs.length;i++)bs[i].addEventListener('click',function(){for(var j=0;j<bs.length;j++)bs[j].classList.remove('active');this.classList.add('active');var ps=document.querySelectorAll('.settings-page');for(var k=0;k<ps.length;k++)ps[k].classList.remove('active');var p=e('page-'+this.getAttribute('data-target'));if(p)p.classList.add('active')})}function t(i,v){var n=e(i);if(n)n.textContent=v||''}function sc(){var c=e('otaChannelSelect');var h=e('otaUpgradeChannel');if(c&&h)h.value=c.value||'stable'}function bc(){var c=e('otaChannelSelect');if(!c||c.dataset.bound)return;c.dataset.bound='1';c.addEventListener('change',function(){c.dataset.dirty='1';c.dataset.pending=c.value||'stable';sc()});c.addEventListener('input',function(){c.dataset.dirty='1';c.dataset.pending=c.value||'stable';sc()});sc()}");
   page += F("function d(v,f){return v===undefined||v===null||v===''?f:v}function tc(s){return s===10?'#666':s===0?'#2196f3':s===1?'#1abf54':s===2?'#ffd600':s===3?'#ff1744':s===4?'#b71c1c':s===5?'#007d5d':'#333'}function tm(n){var x=(n||{}).tmc||{},a=x.segments||[],b=e('tftTmcSegments'),m=e('tftTmcMarker'),l=e('tftTmcLabel');if(!b)return;b.textContent='';if(!a.length||!(x.totalDistance>0)){if(l)l.textContent='等待数据';if(m)m.style.display='none';return}var sum=0;for(var i=0;i<a.length;i++)sum+=Math.max(0,Number(a[i].distance)||0);if(!(sum>0))sum=x.totalDistance;for(var j=0;j<a.length;j++){var q=document.createElement('i');q.style.flex=String(Math.max(0,Number(a[j].distance)||0));q.style.background=tc(Number(a[j].status));b.appendChild(q)}var p=Math.max(0,Math.min(100,(Number(x.finishDistance)||0)/Number(x.totalDistance)*100));if(m){m.style.left=String(p)+'%';m.style.display='block'}if(l)l.textContent=String(a.length)+' 段 · '+Math.round(p)+'%'}function pv(n){n=n||{};if(!n.active){t('tftMode','WAIT');t('tftRoad','等待 UDP JSON');t('tftSpeed','--');t('tftArrow','·');t('tftTurn','尚未接收到有效导航帧');t('tftNext','请从 Android 转发器发送测试帧');t('tftEta','--');t('tftDestination','--');t('tftGuide','--');t('tftTraffic','--');t('tftAlert','等待 UDP JSON');var z=e('tftProgress');if(z)z.style.width='0%';tm({});return}var r=n.route||{},g=n.guide||{},ri=n.roadInfo||{},u=n.turn||{},s=n.speed||{};var icon=Number(u.icon||0),a=(icon===2||icon===4||icon===6||icon===18)?'←':((icon===8)?'↻':((icon===3||icon===5||icon===7||icon===19)?'→':'↑'));t('tftMode',String(d(n.mode,'nav')).toUpperCase());t('tftRoad',d(n.road,'--'));t('tftSpeed',s.current>=0?s.current:'--');t('tftArrow',a);t('tftTurn',d((d(u.text,'直行'))+' '+d(u.distanceText,''),'直行'));t('tftNext',d(u.road,'--'));t('tftEta',(d((n.eta||{}).remainTimeText,'--'))+' · '+d((n.eta||{}).remainDistanceText,'--'));t('tftDestination',d(r.destination,'--'));t('tftGuide',d(g.exitName?g.exitName+(g.exitDirection?' · '+g.exitDirection:''):(g.serviceAreaName?'服务区 '+g.serviceAreaName+' '+d(g.serviceAreaDistance,''):'--'),'--'));t('tftTraffic',(d(ri.type,'--'))+(ri.traffic?' · '+ri.traffic:'')+(ri.crossMap?' · 路口放大图':''));t('tftAlert',d(n.alert,d(n.lightText,'--')));var p=Number(r.progressPercent);if(!(p>=0&&p<=100))p=0;var b=e('tftProgress');if(b)b.style.width=String(p)+'%';tm(n)}");
   page += F("function poll(){fetch('/status.json',{cache:'no-store'}).then(function(r){return r.ok?r.json():null}).then(function(s){if(!s)return;");
   page += F("var w=e('wifiStatus');if(w){w.textContent=s.wifiStatus||'';w.className='v '+(s.connected?'ok':'bad')}");
@@ -841,7 +911,7 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += F("if(s.developerPreview){var tf=e('tftFreshness'),n=s.nav||{},age=Number(n.packetAgeMs),cfg=s.tft||{},stale=Number(cfg.staleMs)||3000,wait=Number(cfg.standbyMs)||10000,data=!!(s.connected||s.bleConnected);if(tf){if(!data){tf.textContent='waiting for UDP/BLE';tf.className='tft-stale'}else if(!n.active||age<0||age>wait){tf.textContent='waiting for navigation';tf.className='tft-stale'}else if(age>stale){tf.textContent='phone data stale '+age+'ms';tf.className='tft-stale'}else{tf.textContent=(s.bleConnected?'BLE':'UDP')+' live · '+age+'ms';tf.className='tft-live'}}}");
   page += F("var c2=e('otaChannelSelect');if(c2&&c2.dataset.dirty&&c2.dataset.pending){if(s.ota&&c2.dataset.pending===s.ota.selectedChannel){c2.dataset.dirty='';c2.dataset.pending=''}else{c2.value=c2.dataset.pending;sc()}}");
   page += F("var p=e('errorPanel');var l=e('lastError');if(p&&l){l.textContent=s.lastError||'';p.style.display=s.lastError?'':'none'}}).catch(function(){})}");
-  page += F("bc();setInterval(poll,800);setTimeout(poll,200)})();</script>");
+  page += F("nav();bc();setInterval(poll,800);setTimeout(poll,200)})();</script>");
   page += F(R"BMP(<script>(function(){var frame=document.getElementById('tftFrame');if(!frame)return;function refresh(){frame.src='/tft.bmp?frame='+Date.now()}setInterval(refresh,1000)})();</script>)BMP");
 #if 0  // Superseded SVG and canvas preview implementation.
   page += F("<script>(function(){function e(i){return document.getElementById(i)}function g(c){var U='&#8593;',L='&#8592;',R='&#8594;',UL='&#8624;',UR='&#8625;',a=[U,L,L+U,R,U+R,UL,L+R,L+U+R,UR,UL+U,U+UR,UL+L,R+UR,'/'+U,'/'+U,U,L,L+U,R,U+R,UL,L+R,L+U+R,UR,UL+U,U+UR,UL+L,R+UR,'/'+U,'/'+U,U+L,U+L,U+R,U+R,L+R,L+R,L+U+R,L+U+R,L+U+R,UL+U,UL+U,U+UR,U+UR,L+UL,L+UL,R+UR,R+UR,'/'+L+UR,L+UL];return c===62?L+U+R:(c===85?'/'+U:(c===89?'-':(a[c]||U)))}function draw(n){var x=(n||{}).lane||{},a=x.lanes||[],r=x.advised||[],b=e('tftLanes'),h=e('tftTmcSegments');if(!b&&h){b=document.createElement('div');b.id='tftLanes';b.className='tft-lanes';h.parentNode.parentNode.insertBefore(b,h.parentNode.previousSibling)}if(!b)return;b.textContent='';for(var i=0;i<a.length&&i<8;i++){var q=document.createElement('span'),c=Number(a[i]);q.className='tft-lane '+((r[i]||(c>=15&&c<=48))?'on':'');q.innerHTML=g(c);b.appendChild(q)}}function poll(){fetch('/status.json',{cache:'no-store'}).then(function(r){return r.ok?r.json():null}).then(function(s){if(s&&s.developerPreview)draw(s.nav)}).catch(function(){})}setInterval(poll,850);setTimeout(poll,240)})()</script>");
@@ -945,7 +1015,7 @@ String NetworkManager::buildNavigationJson() const {
   }
 
   String json;
-  json.reserve(1050);
+  json.reserve(1600);
   json += "{";
   json += "\"active\":";
   json += state.active ? "true" : "false";
@@ -1006,6 +1076,22 @@ String NetworkManager::buildNavigationJson() const {
   json += ",\"exitDirection\":\"" + jsonEscape(state.guide.exitDirection) + "\"";
   json += ",\"serviceAreaName\":\"" + jsonEscape(state.guide.serviceAreaName) + "\"";
   json += ",\"serviceAreaDistance\":\"" + jsonEscape(state.guide.serviceAreaDistance) + "\"}";
+  json += ",\"music\":{\"active\":";
+  json += state.music.active ? "true" : "false";
+  json += ",\"playing\":";
+  json += state.music.playing ? "true" : "false";
+  json += ",\"source\":\"" + jsonEscape(state.music.source) + "\"";
+  json += ",\"songId\":" + String(static_cast<long long>(state.music.songId));
+  json += ",\"title\":\"" + jsonEscape(state.music.title) + "\"";
+  json += ",\"artist\":\"" + jsonEscape(state.music.artist) + "\"";
+  json += ",\"album\":\"" + jsonEscape(state.music.album) + "\"";
+  json += ",\"positionMs\":" + String(static_cast<long long>(state.music.positionMs));
+  json += ",\"durationMs\":" + String(static_cast<long long>(state.music.durationMs));
+  json += ",\"lyric\":\"" + jsonEscape(state.music.lyric) + "\"";
+  json += ",\"translatedLyric\":\"" + jsonEscape(state.music.translatedLyric) + "\"";
+  json += ",\"nextLyric\":\"" + jsonEscape(state.music.nextLyric) + "\"";
+  json += ",\"highlightedLyric\":\"" + jsonEscape(state.music.highlightedLyric) + "\"";
+  json += ",\"wordProgressPermille\":" + String(state.music.wordProgressPermille) + "}";
   json += ",\"laneText\":\"" + jsonEscape(laneText) + "\"";
   json += ",\"lightText\":\"" + jsonEscape(lightText) + "\"";
   json += ",\"alert\":\"" + jsonEscape(state.alert) + "\"";

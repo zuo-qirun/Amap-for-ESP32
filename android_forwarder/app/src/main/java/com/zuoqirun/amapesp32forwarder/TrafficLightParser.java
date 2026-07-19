@@ -33,9 +33,10 @@ final class TrafficLightParser {
 
     private static Result parse(Extras extras, boolean inCruiseMode,
                                 int navigationTurnDir, int currentTurnIcon) {
-        if (!hasTrafficLightPayload(extras)) {
-            return Result.notHandled();
-        }
+        // The caller already filters by traffic-light action or known keys.
+        // Do not require a fixed extras whitelist here: several AMap cruise
+        // builds use obfuscated/extended CameraLight wrapper key names, which
+        // must be discovered by the generic Bundle scan below.
         if (booleanValue(extras, false, "clearLights", "EXTRA_CLEAR_LIGHTS")
                 || isExplicitEmptyLightsData(extras)) {
             return Result.clear();

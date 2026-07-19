@@ -1,6 +1,6 @@
 # ESP32 Display
 
-ESP32-S3 PlatformIO + Arduino 工程，接收 Android App 发来的 UDP 或 BLE JSON，并在 OLED/TFT 上显示导航信息。
+ESP32-S3 PlatformIO + Arduino 工程，接收 Android App 发来的 UDP 或 BLE JSON，并在 OLED/TFT 上显示导航及网易云音乐歌词/进度。
 
 ## 许可证
 
@@ -34,6 +34,44 @@ ESP32-S3 PlatformIO + Arduino 工程，接收 Android App 发来的 UDP 或 BLE 
 
 `AMAP_WIFI_SSID` / `AMAP_WIFI_PASSWORD` 是兜底配置。设备也支持 Web 配网，保存后的 Wi-Fi 会写入 ESP32 NVS，优先级高于 `Config.h`。Web 配置页会随设备启动常驻；当 ESP32 已连上外部 Wi-Fi 时，可直接访问 `http://设备的 STA IP/`。
 
+### 鸿讯 28005 SPI TFT 与电容触摸
+
+28005 使用 3.3V 供电和逻辑电平，显示部分为 4 线 SPI，面板控制器按实物选择：
+
+```cpp
+// ST7789V 屏（默认）
+#define AMAP_TFT_DRIVER AMAP_TFT_DRIVER_ST7789
+// 若实物为 ILI9341V，改为：
+// #define AMAP_TFT_DRIVER AMAP_TFT_DRIVER_ILI9341
+
+// 当前默认使用无触摸版；电容触摸版可改为 FT6336U。
+#define AMAP_TFT_TOUCH_DRIVER AMAP_TFT_TOUCH_DRIVER_NONE
+// #define AMAP_TFT_TOUCH_DRIVER AMAP_TFT_TOUCH_DRIVER_FT6336U
+```
+
+默认 ESP32-S3 接线：
+
+| 28005 引脚 | ESP32-S3 | 说明 |
+| --- | --- | --- |
+| VCC | 3V3 | 请勿接 5V 逻辑 |
+| GND | GND | 电源地 |
+| CS | GPIO10 | TFT 片选 |
+| RESET | GPIO15 | TFT 复位 |
+| DC | GPIO14 | TFT 数据/命令 |
+| SDI (MOSI) | GPIO11 | TFT SPI 数据输入 |
+| SCK | GPIO12 | TFT SPI 时钟 |
+| LED | GPIO16 | 背光，高电平点亮 |
+| SDO (MISO) | GPIO13 | TFT SPI 数据输出，可选 |
+| T_CLK / SCL | GPIO9 | FT6336U I2C 时钟 |
+| T_CS / RST | GPIO17 | FT6336U 低电平复位 |
+| T_SDI / SDA | GPIO8 | FT6336U I2C 数据 |
+| T_SDO | 不连接 | 电容版为空脚 |
+| T_IRQ / INT | GPIO18 | FT6336U 中断 |
+
+FT6336U 固定使用 7-bit I2C 地址 `0x38`。固件启动时会在串口打印显示控制器和触摸控制器的检测结果；触摸按下/抬起时打印转换后的 320x240 坐标。若坐标方向与面板贴合方向不同，可调整 `AMAP_TFT_TOUCH_SWAP_XY`、`AMAP_TFT_TOUCH_INVERT_X` 和 `AMAP_TFT_TOUCH_INVERT_Y`。
+
+`Config.h` 中的上述宏是首次启动或 NVS 尚无记录时的默认值。烧录后也可在设备配置网页的“显示硬件”区域切换 ST7789V / ILI9341V，并单独开启或关闭 FT6336U 触摸；保存后设备会自动重启并从 NVS 加载新设置。无触摸版建议保持关闭，避免初始化和占用触摸相关 GPIO。
+
 ## BLE 通信
 
 - 固件启动后会广播 `AMap-ESP32-XXXXXX`，无需配对。
@@ -49,11 +87,11 @@ ESP32-S3 PlatformIO + Arduino 工程，接收 Android App 发来的 UDP 或 BLE 
 
 1. 手机连接热点 `AMap-ESP32-xxxxxx`。
 2. 系统通常会自动弹出配网页面；若没有弹出，手动访问 `http://192.168.4.1/`。
-3. 页面会显示 Wi-Fi 状态、当前 SSID、配置来源、STA IP、UDP 端口、BLE 连接/配对记录及配网热点状态。
+3. 页面会显示 Wi-Fi 状态、当前 SSID、配置来源、STA IP、UDP 端口、屏幕芯片、触摸开关、BLE 连接/配对记录及配网热点状态。
 4. 输入新的 Wi-Fi 名称和密码，点击“保存并连接”。
 5. 连接成功后配网热点会关闭；之后仍可通过串口打印的 STA IP 访问同一个状态/配网页面。
 
-页面还提供“清除保存的 Wi-Fi”，清除后会回退到 `Config.h` 兜底配置；如果兜底 SSID 仍是占位符，则继续保持配网模式。
+桌面网页使用左侧分类侧边栏与右侧设置面板，移动端自动切换为顶部横向分类。页面还提供“清除保存的 Wi-Fi”，清除后会回退到 `Config.h` 兜底配置；如果兜底 SSID 仍是占位符，则继续保持配网模式。
 
 页面的“清除 BLE 配对设备”会清除 ESP32 本机的 NimBLE bond（不会删除手机系统里任何其他蓝牙设备），并让当前客户端断线后重新广播。
 
@@ -246,6 +284,10 @@ UDP 192.168.1.23:54231 seq=1 mode=nav road=京藏高速 turn=右转 dist=300米
 5. 底部轮播：红绿灯、电子眼、车道、提醒、detail
 
 更高屏幕会额外显示提醒和 detail 行。
+
+当导航未激活而 `music.active=true` 时，OLED/TFT 自动切换到沉浸式音乐页，显示真实歌曲封面（失败时使用几何占位图）、歌曲信息、播放/暂停、进度条、当前歌词、翻译和下一句。存在 YRC 时，TFT 根据当前词时间在本机连续插值并逐像素填充；没有 YRC 时，长句按整句时间轴自动滚动，翻译行也会独立滚动。OLED 逐步显示已唱前缀。导航激活时仍保持导航主体，但 TFT 会在底部显示当前歌词与翻译，OLED 会用当前歌词替换导航页最底行。
+
+TFT 针对 N16R8 使用双帧 PSRAM + 内部 DMA 分块缓冲的局部刷新：当前帧和上一帧位于 8 MB PSRAM，16 KB 传输缓冲位于内部 DMA RAM。渲染器以 16×8 像素脏块比较前后帧，把相邻变化合并成矩形后批量发送；变化超过约 45% 或过于碎片化时自动切换整帧发送。SPI 使用 ESP32-S3 可实际产生的 80 MHz 时钟，逻辑刷新周期为 33 ms。
 
 ## 超时行为
 

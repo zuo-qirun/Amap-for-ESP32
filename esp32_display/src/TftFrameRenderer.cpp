@@ -3,6 +3,7 @@
 #include <pgmspace.h>
 
 #include "Config.h"
+#include "AlbumArtCache.h"
 #include "NavigationIcons.h"
 #include "NaviLinkIcons.h"
 
@@ -39,6 +40,18 @@ uint16_t tmcColor(int status) {
   }
 }
 
+uint16_t musicAccent(int64_t songId) {
+  constexpr uint16_t palette[] = {
+      0xB32C,  // warm rose
+      0x2CB4,  // jade
+      0x34BF,  // cyan
+      0x8B9F,  // violet
+      0xE4A8,  // amber
+  };
+  const uint64_t value = songId < 0 ? 0 : static_cast<uint64_t>(songId);
+  return palette[value % (sizeof(palette) / sizeof(palette[0]))];
+}
+
 size_t utf8CharacterBytes(uint8_t firstByte) {
   if ((firstByte & 0x80) == 0) return 1;
   if ((firstByte & 0xE0) == 0xC0) return 2;
@@ -47,13 +60,96 @@ size_t utf8CharacterBytes(uint8_t firstByte) {
   return 1;
 }
 
+bool decodeUtf8(const String& text, size_t offset, uint16_t& codepoint, size_t& bytes) {
+  if (offset >= text.length()) return false;
+  const uint8_t first = static_cast<uint8_t>(text[offset]);
+  bytes = utf8CharacterBytes(first);
+  if (offset + bytes > text.length()) {
+    bytes = 1;
+    codepoint = '?';
+    return true;
+  }
+  uint32_t value = bytes == 1 ? first : first & ((1U << (7 - bytes)) - 1U);
+  for (size_t index = 1; index < bytes; ++index) {
+    const uint8_t next = static_cast<uint8_t>(text[offset + index]);
+    if ((next & 0xC0) != 0x80) {
+      bytes = 1;
+      codepoint = '?';
+      return true;
+    }
+    value = (value << 6) | (next & 0x3F);
+  }
+  codepoint = value <= 0xFFFF ? static_cast<uint16_t>(value) : 0x25A1;
+  return true;
+}
+
+const uint8_t* fallbackFont(const uint8_t* primary) {
+  return primary == u8g2_font_wqy16_t_gb2312
+             ? u8g2_font_b16_t_japanese3
+             : u8g2_font_b12_t_japanese3;
+}
+
+int16_t glyphWidth(U8G2_FOR_ADAFRUIT_GFX& font, const uint8_t* primary,
+                   uint16_t& codepoint) {
+  font.setFont(primary);
+  int16_t width = u8g2_GetGlyphWidth(&font.u8g2, codepoint);
+  if (width == 0) {
+    font.setFont(fallbackFont(primary));
+    width = u8g2_GetGlyphWidth(&font.u8g2, codepoint);
+  }
+  if (width == 0) {
+    codepoint = 0x25A1;  // visible replacement box instead of a silent gap
+    font.setFont(u8g2_font_unifont_t_symbols);
+    width = u8g2_GetGlyphWidth(&font.u8g2, codepoint);
+  }
+  if (width == 0) {
+    codepoint = '?';
+    font.setFont(primary);
+    width = u8g2_GetGlyphWidth(&font.u8g2, codepoint);
+  }
+  return max<int16_t>(0, width);
+}
+
+int16_t textWidth(U8G2_FOR_ADAFRUIT_GFX& font, const String& text) {
+  const uint8_t* primary = font.u8g2.font;
+  int16_t width = 0;
+  for (size_t offset = 0; offset < text.length();) {
+    uint16_t codepoint = 0;
+    size_t bytes = 1;
+    if (!decodeUtf8(text, offset, codepoint, bytes)) break;
+    width += glyphWidth(font, primary, codepoint);
+    offset += bytes;
+  }
+  font.setFont(primary);
+  return width;
+}
+
+int16_t drawTextWithFallback(U8G2_FOR_ADAFRUIT_GFX& font, int16_t x, int16_t baseline,
+                             const String& text, uint16_t color) {
+  const uint8_t* primary = font.u8g2.font;
+  font.setForegroundColor(color);
+  int16_t cursor = x;
+  for (size_t offset = 0; offset < text.length();) {
+    uint16_t codepoint = 0;
+    size_t bytes = 1;
+    if (!decodeUtf8(text, offset, codepoint, bytes)) break;
+    const int16_t width = glyphWidth(font, primary, codepoint);
+    font.drawGlyph(cursor, baseline, codepoint);
+    cursor += width;
+    offset += bytes;
+  }
+  font.setFont(primary);
+  return cursor - x;
+}
+
 String clipUtf8ToWidth(U8G2_FOR_ADAFRUIT_GFX& font, const String& text, int16_t maxWidth) {
   if (maxWidth <= 0) return "";
-  if (font.getUTF8Width(text.c_str()) <= maxWidth) return text;
+  if (textWidth(font, text) <= maxWidth) return text;
 
   const String suffix = "...";
-  const int16_t contentWidth = max<int16_t>(0, maxWidth - font.getUTF8Width(suffix.c_str()));
+  const int16_t contentWidth = max<int16_t>(0, maxWidth - textWidth(font, suffix));
   String result;
+  int16_t resultWidth = 0;
   size_t offset = 0;
   while (offset < text.length()) {
     size_t bytes = utf8CharacterBytes(static_cast<uint8_t>(text[offset]));
@@ -67,13 +163,41 @@ String clipUtf8ToWidth(U8G2_FOR_ADAFRUIT_GFX& font, const String& text, int16_t 
     }
     if (!valid) bytes = 1;
 
-    String candidate = result + text.substring(offset, offset + bytes);
-    if (font.getUTF8Width(candidate.c_str()) > contentWidth) break;
-    result = candidate;
+    const String character = text.substring(offset, offset + bytes);
+    const int16_t characterWidth = textWidth(font, character);
+    if (resultWidth + characterWidth > contentWidth) break;
+    result += character;
+    resultWidth += characterWidth;
     offset += bytes;
   }
   return result + suffix;
 }
+
+class HorizontalClipCanvas : public Adafruit_GFX {
+public:
+  HorizontalClipCanvas(Adafruit_GFX& target, int16_t left, int16_t right)
+      : Adafruit_GFX(target.width(), target.height()), target(target),
+        left(left), right(right) {}
+
+  void drawPixel(int16_t x, int16_t y, uint16_t color) override {
+    if (x >= left && x < right) target.drawPixel(x, y, color);
+  }
+  void drawFastHLine(int16_t x, int16_t y, int16_t width, uint16_t color) override {
+    const int16_t clippedLeft = max<int16_t>(x, left);
+    const int16_t clippedRight = min<int16_t>(x + width, right);
+    if (clippedRight > clippedLeft) {
+      target.drawFastHLine(clippedLeft, y, clippedRight - clippedLeft, color);
+    }
+  }
+  void drawFastVLine(int16_t x, int16_t y, int16_t height, uint16_t color) override {
+    if (x >= left && x < right) target.drawFastVLine(x, y, height, color);
+  }
+
+private:
+  Adafruit_GFX& target;
+  int16_t left;
+  int16_t right;
+};
 
 String numericPart(const String& value) {
   String result;
@@ -126,19 +250,184 @@ void drawAlphaBitmap(Adafruit_GFX& display, const NaviLinkIcons::Bitmap& bitmap,
 void TftFrameRenderer::render(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                               const NavState& state, bool wifiConnected, bool bleConnected,
                               const String& ip, uint16_t port, unsigned long silenceMs) {
+  if (state.music.active) {
+    AlbumArtCache::instance().request(state.music.coverUrl, wifiConnected);
+  }
   if (!wifiConnected && !bleConnected) {
     renderStandby(display, font, "设备配网模式", "连接设备热点后打开配置页面",
                   wifiConnected, bleConnected, ip, port);
-  } else if (!state.active || silenceMs > AMAP_STANDBY_MS) {
-    renderStandby(display, font, "等待导航数据", "请打开手机转发器并开始导航",
+  } else if (silenceMs > AMAP_STANDBY_MS) {
+    renderStandby(display, font, "等待手机数据", "请打开手机转发器",
                   wifiConnected, bleConnected, ip, port);
   } else if (silenceMs > AMAP_STALE_MS) {
     renderStandby(display, font, "手机数据已暂停", "正在等待新的 UDP / BLE 数据",
                   wifiConnected, bleConnected, ip, port);
+  } else if (!state.active && state.music.active) {
+    renderMusic(display, font, state.music);
+  } else if (!state.active) {
+    renderStandby(display, font, "等待导航或音乐", "打开高德导航或网易云音乐",
+                  wifiConnected, bleConnected, ip, port);
   } else if (state.mode == "cruise") {
     renderCruise(display, font, state);
+    if (state.music.active) {
+      drawMusicOverlay(display, font, state.music);
+    }
   } else {
     renderNavigation(display, font, state);
+    if (state.music.active) {
+      drawMusicOverlay(display, font, state.music);
+    }
+  }
+}
+
+void TftFrameRenderer::renderMusic(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
+                                   const MusicState& music) {
+  const unsigned long now = millis();
+  const int64_t positionMs = music.positionAt(now);
+  const int wordProgressPermille = music.wordProgressAt(now);
+  const uint16_t accent = musicAccent(music.songId);
+  const uint16_t atmosphere = alphaBlend(kCanvas, accent, 0x32);
+  const uint16_t idleLyric = alphaBlend(kCanvas, kText, 0x68);
+  const uint16_t distantLyric = alphaBlend(kCanvas, kText, 0x3A);
+  display.fillScreen(kCanvas);
+
+  // Refined Now Playing composition scaled to 320x240: album identity on the
+  // left, a vertically focused lyric stage on the right, and a dim album-tone
+  // atmosphere behind both. No card chrome is used on the music screen.
+  display.fillCircle(44, 16, 92, atmosphere);
+  display.fillCircle(302, 226, 116, alphaBlend(kCanvas, accent, 0x18));
+  display.fillTriangle(0, 240, 172, 240, 0, 112,
+                       alphaBlend(kCanvas, accent, 0x16));
+
+  constexpr int16_t coverLeft = 14;
+  constexpr int16_t coverTop = 14;
+  constexpr int16_t coverSize = 126;
+  const uint16_t coverBase = alphaBlend(kSurface, accent, 0x72);
+  if (!AlbumArtCache::instance().draw(display, coverLeft, coverTop)) {
+    display.fillRoundRect(coverLeft, coverTop, coverSize, coverSize, 12, coverBase);
+    display.fillCircle(coverLeft + 63, coverTop + 63, 48,
+                       alphaBlend(coverBase, kCanvas, 0x62));
+    display.drawCircle(coverLeft + 63, coverTop + 63, 37,
+                       alphaBlend(coverBase, kText, 0x45));
+    display.drawCircle(coverLeft + 63, coverTop + 63, 27,
+                       alphaBlend(coverBase, kText, 0x2A));
+    display.fillTriangle(coverLeft + 8, coverTop + 110,
+                         coverLeft + 52, coverTop + 24,
+                         coverLeft + 102, coverTop + 126,
+                         alphaBlend(coverBase, kText, 0x32));
+    display.fillCircle(coverLeft + 63, coverTop + 63, 10, accent);
+    display.fillCircle(coverLeft + 63, coverTop + 63, 3, kText);
+  } else {
+    display.drawRoundRect(coverLeft, coverTop, AlbumArtCache::SIZE,
+                          AlbumArtCache::SIZE, 10,
+                          alphaBlend(kCanvas, kText, 0x42));
+  }
+
+  drawClipped(font, 15, 160, 126,
+              music.title.isEmpty() ? "网易云音乐" : music.title, kText);
+  String byline = music.artist;
+  if (!music.album.isEmpty()) {
+    byline += (byline.isEmpty() ? "" : " · ") + music.album;
+  }
+  drawClipped(font, 15, 179, 126, byline, idleLyric);
+
+  constexpr int16_t progressLeft = 15;
+  constexpr int16_t progressTop = 190;
+  constexpr int16_t progressWidth = 126;
+  display.fillRoundRect(progressLeft, progressTop, progressWidth, 3, 1,
+                        alphaBlend(kCanvas, kText, 0x25));
+  if (music.durationMs > 0) {
+    const int64_t bounded = min<int64_t>(max<int64_t>(0, positionMs), music.durationMs);
+    const int16_t filled = static_cast<int16_t>(bounded * progressWidth / music.durationMs);
+    if (filled > 0) {
+      display.fillRoundRect(progressLeft, progressTop, filled, 3, 1, kText);
+    }
+  }
+
+  // Minimal transport controls echo the extension's transparent bottom bar.
+  display.fillTriangle(35, 213, 43, 207, 43, 219, idleLyric);
+  display.fillCircle(77, 213, 16, alphaBlend(kCanvas, kText, 0xE6));
+  if (music.playing) {
+    display.fillRect(72, 206, 3, 14, kCanvas);
+    display.fillRect(79, 206, 3, 14, kCanvas);
+  } else {
+    display.fillTriangle(73, 205, 73, 221, 84, 213, kCanvas);
+  }
+  display.fillTriangle(119, 207, 119, 219, 127, 213, idleLyric);
+  drawUtf8(font, 15, 238, formatTime(positionMs), distantLyric);
+  const String duration = formatTime(music.durationMs);
+  drawUtf8(font, 141 - textWidth(font, duration), 238,
+           duration, distantLyric);
+
+  constexpr int16_t lyricLeft = 163;
+  constexpr int16_t lyricWidth = 147;
+  drawClipped(font, lyricLeft, 29, lyricWidth, music.previousLyric, distantLyric);
+
+  const String lyric = music.lyric.isEmpty() ? "暂无歌词" : music.lyric;
+  font.setFont(u8g2_font_wqy16_t_gb2312);
+  if (music.highlightedLyric.isEmpty() && music.currentWord.isEmpty()) {
+    drawTimedScrollingLine(font, lyricLeft, 82, lyricWidth, lyric,
+                           positionMs, music.lineStartMs,
+                           music.lineDurationMs, kText);
+  } else {
+    drawKaraokeLine(font, lyricLeft, 82, lyricWidth, lyric,
+                    music.highlightedLyric, music.currentWord,
+                    wordProgressPermille, idleLyric, kText);
+  }
+  font.setFont(u8g2_font_wqy12_t_gb2312);
+  if (!music.translatedLyric.isEmpty()) {
+    drawTimedScrollingLine(font, lyricLeft, 108, lyricWidth,
+                           music.translatedLyric, positionMs,
+                           music.lineStartMs, music.lineDurationMs,
+                           alphaBlend(kCanvas, kText, 0x82));
+  }
+  drawClipped(font, lyricLeft, 159, lyricWidth, music.nextLyric, distantLyric);
+  if (!music.nextLyric.isEmpty()) {
+    display.fillCircle(lyricLeft, 185, 2, alphaBlend(kCanvas, kText, 0x28));
+    display.fillCircle(lyricLeft + 8, 185, 2, alphaBlend(kCanvas, kText, 0x1C));
+    display.fillCircle(lyricLeft + 16, 185, 2, alphaBlend(kCanvas, kText, 0x12));
+  }
+}
+
+void TftFrameRenderer::drawMusicOverlay(Adafruit_GFX& display,
+                                        U8G2_FOR_ADAFRUIT_GFX& font,
+                                        const MusicState& music) {
+  constexpr int16_t top = 188;
+  constexpr int16_t left = 7;
+  const int16_t width = display.width() - 14;
+  display.fillRoundRect(left, top, width, 46, 10, kInfoSurface);
+  display.drawRoundRect(left, top, width, 46, 10, kCapsuleStroke);
+  display.fillCircle(18, top + 15, 4, music.playing ? kGreen : kYellow);
+
+  String current = music.lyric;
+  if (current.isEmpty()) {
+    current = music.title.isEmpty() ? "暂无歌词" : music.title;
+  }
+  const unsigned long now = millis();
+  const int64_t positionMs = music.positionAt(now);
+  if (music.highlightedLyric.isEmpty() && music.currentWord.isEmpty()) {
+    drawTimedScrollingLine(font, 29, top + 19, display.width() - 45,
+                           current, positionMs, music.lineStartMs,
+                           music.lineDurationMs, kAccent);
+  } else {
+    drawKaraokeLine(font, 29, top + 19, display.width() - 45, current,
+                    music.highlightedLyric, music.currentWord,
+                    music.wordProgressAt(now), kTextSoft, kAccent);
+  }
+
+  String secondary = music.translatedLyric;
+  if (secondary.isEmpty()) {
+    secondary = music.nextLyric;
+  }
+  if (secondary.isEmpty()) {
+    secondary = music.artist;
+  }
+  if (!music.translatedLyric.isEmpty()) {
+    drawTimedScrollingLine(font, 18, top + 39, display.width() - 36,
+                           secondary, positionMs, music.lineStartMs,
+                           music.lineDurationMs, kTextSoft);
+  } else {
+    drawClipped(font, 18, top + 39, display.width() - 36, secondary, kTextSoft);
   }
 }
 
@@ -202,9 +491,10 @@ void TftFrameRenderer::renderNavigation(Adafruit_GFX& display,
 
   if (state.lightCount > 0) {
     drawNavigationTrafficPill(display, state);
-  } else {
-    drawCameraPill(display, font, state, 216, 5, 98);
+  } else if (state.camera.distance >= 0) {
+    drawCameraPill(display, font, state, 214, 5, 58);
   }
+  drawSpeedLimitSign(display, state, 294, 30);
 
   int16_t nextTop = 100;
   if (state.lane.count > 0) {
@@ -230,9 +520,10 @@ void TftFrameRenderer::renderCruise(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX
   if (state.lightCount > 0) {
     drawCruiseTrafficPills(display, state, 58);
     laneTop = 114;
-  } else {
-    drawCameraPill(display, font, state, 216, 8, 94);
+  } else if (state.camera.distance >= 0) {
+    drawCameraPill(display, font, state, 211, 8, 61);
   }
+  drawSpeedLimitSign(display, state, 294, 33);
   drawLanes(display, state, laneTop);
 }
 
@@ -255,21 +546,21 @@ void TftFrameRenderer::drawNavigationInfo(Adafruit_GFX& display,
   if (destination.isEmpty()) {
     destination = state.guide.exitName;
   }
-  // Service-area broadcasts are transient and operationally more useful than
-  // the static destination, so show them as soon as they are available.
+  const int16_t bottomBaseline = top + height - 10;
+  const int16_t serviceLeft = 174;
+  if (!destination.isEmpty()) {
+    drawUtf8(font, 18, bottomBaseline, "DEST", kMuted);
+    drawClipped(font, 56, bottomBaseline, serviceLeft - 64, destination, kMuted);
+  }
+  // Keep service-area information in the lower-right slot. It never occupies
+  // the ETA/distance row above it.
   if (!state.guide.serviceAreaName.isEmpty()) {
-    drawUtf8(font, 18, top + height - 10, "SAPA", kMuted);
     String serviceArea = state.guide.serviceAreaName;
     if (!state.guide.serviceAreaDistance.isEmpty()) {
       serviceArea += " " + state.guide.serviceAreaDistance;
     }
-    drawClipped(font, 56, top + height - 10, display.width() - 72, serviceArea, kTextSoft);
-  } else if (!destination.isEmpty()) {
-    drawUtf8(font, 18, top + height - 10, "DEST", kMuted);
-    drawClipped(font, 56, top + height - 10, display.width() - 72, destination, kMuted);
-  } else if (state.speed.limit > 0) {
-    drawUtf8(font, 18, top + height - 10, "LIMIT", kMuted);
-    drawUtf8(font, 68, top + height - 10, String(state.speed.limit) + " km/h", kTextSoft);
+    drawClipped(font, serviceLeft, bottomBaseline, display.width() - serviceLeft - 12,
+                serviceArea, kTextSoft);
   }
 }
 
@@ -294,14 +585,104 @@ void TftFrameRenderer::drawCruiseInfo(Adafruit_GFX& display,
 
 void TftFrameRenderer::drawUtf8(U8G2_FOR_ADAFRUIT_GFX& font, int16_t x, int16_t baseline,
                                 const String& text, uint16_t color) {
-  font.setForegroundColor(color);
-  font.setCursor(x, baseline);
-  font.print(text);
+  drawTextWithFallback(font, x, baseline, text, color);
 }
 
 void TftFrameRenderer::drawClipped(U8G2_FOR_ADAFRUIT_GFX& font, int16_t x, int16_t baseline,
                                    int16_t maxWidth, const String& text, uint16_t color) {
   drawUtf8(font, x, baseline, clipUtf8ToWidth(font, text, maxWidth), color);
+}
+
+void TftFrameRenderer::drawKaraokeLine(U8G2_FOR_ADAFRUIT_GFX& font, int16_t x,
+                                       int16_t baseline, int16_t maxWidth,
+                                       const String& text,
+                                       const String& highlighted,
+                                       const String& currentWord,
+                                       int wordProgressPermille,
+                                       uint16_t idleColor,
+                                       uint16_t activeColor) {
+  if (text.isEmpty()) return;
+  size_t prefixBytes = 0;
+  const size_t possiblePrefix = min(text.length(), highlighted.length());
+  while (prefixBytes < possiblePrefix && text[prefixBytes] == highlighted[prefixBytes]) {
+    ++prefixBytes;
+  }
+  while (prefixBytes > 0 && prefixBytes < text.length() &&
+         (static_cast<uint8_t>(text[prefixBytes]) & 0xC0) == 0x80) {
+    --prefixBytes;
+  }
+  const String safeHighlight = text.substring(0, prefixBytes);
+  size_t start = 0;
+  const int16_t anchor = max<int16_t>(12, maxWidth * 2 / 3);
+  while (start < safeHighlight.length() &&
+         textWidth(font, safeHighlight.substring(start)) > anchor) {
+    start += utf8CharacterBytes(static_cast<uint8_t>(safeHighlight[start]));
+  }
+  String visible = text.substring(min(start, text.length()));
+  String visibleHighlight = start < safeHighlight.length()
+                                ? safeHighlight.substring(start) : String();
+  drawClipped(font, x, baseline, maxWidth, visible,
+              visibleHighlight.isEmpty() ? activeColor : idleColor);
+  if (visibleHighlight.isEmpty()) return;
+
+  const bool currentWordAligned = !currentWord.isEmpty() &&
+                                  visibleHighlight.endsWith(currentWord);
+  if (!currentWordAligned) {
+    drawClipped(font, x, baseline, maxWidth, visibleHighlight, activeColor);
+    return;
+  }
+
+  const String completed = visibleHighlight.substring(
+      0, visibleHighlight.length() - currentWord.length());
+  drawClipped(font, x, baseline, maxWidth, completed, activeColor);
+  const int16_t wordX = x + textWidth(font, completed);
+  const int16_t wordWidth = textWidth(font, currentWord);
+  const int16_t activeWidth = static_cast<int16_t>(
+      (static_cast<int32_t>(wordWidth) * constrain(wordProgressPermille, 0, 1000) + 999) /
+      1000);
+  if (activeWidth <= 0 || font.u8g2.gfx == nullptr) return;
+
+  const uint8_t* primary = font.u8g2.font;
+  HorizontalClipCanvas clipped(*font.u8g2.gfx, wordX, wordX + activeWidth);
+  U8G2_FOR_ADAFRUIT_GFX clippedFont;
+  clippedFont.begin(clipped);
+  clippedFont.setFontMode(1);
+  clippedFont.setFont(primary);
+  drawTextWithFallback(clippedFont, wordX, baseline, currentWord, activeColor);
+}
+
+void TftFrameRenderer::drawTimedScrollingLine(U8G2_FOR_ADAFRUIT_GFX& font,
+                                               int16_t x, int16_t baseline,
+                                               int16_t maxWidth,
+                                               const String& text,
+                                               int64_t positionMs,
+                                               int64_t lineStartMs,
+                                               int64_t lineDurationMs,
+                                               uint16_t color) {
+  if (text.isEmpty() || maxWidth <= 0 || font.u8g2.gfx == nullptr) return;
+  const int16_t width = textWidth(font, text);
+  if (width <= maxWidth) {
+    drawUtf8(font, x, baseline, text, color);
+    return;
+  }
+
+  int progress = 0;
+  if (lineStartMs >= 0 && lineDurationMs > 0) {
+    progress = constrain(static_cast<int>(
+        (positionMs - lineStartMs) * 1000 / lineDurationMs), 0, 1000);
+  }
+  // Keep a brief readable lead-in, then finish before the next line arrives.
+  const int scrollProgress = constrain((progress - 60) * 1000 / 820, 0, 1000);
+  const int16_t offset = static_cast<int16_t>(
+      static_cast<int32_t>(width - maxWidth) * scrollProgress / 1000);
+
+  const uint8_t* primary = font.u8g2.font;
+  HorizontalClipCanvas clipped(*font.u8g2.gfx, x, x + maxWidth);
+  U8G2_FOR_ADAFRUIT_GFX clippedFont;
+  clippedFont.begin(clipped);
+  clippedFont.setFontMode(1);
+  clippedFont.setFont(primary);
+  drawTextWithFallback(clippedFont, x - offset, baseline, text, color);
 }
 
 void TftFrameRenderer::drawBig(Adafruit_GFX& display, int16_t x, int16_t top,
@@ -333,18 +714,21 @@ void TftFrameRenderer::drawCameraPill(Adafruit_GFX& display,
   }
   display.fillRoundRect(x, y, width, 50, 25, kCapsule);
   display.drawRoundRect(x, y, width, 50, 25, alphaBlend(kCapsule, kText, 0x33));
-  const int16_t cx = x + 23;
-  const int16_t cy = y + 25;
-  display.fillCircle(cx, cy, 20, 0xE800);  // camera_shape outer red ring
-  display.fillCircle(cx, cy, 18, kText);
-  const int limit = state.camera.speedLimit > 0 ? state.camera.speedLimit : state.speed.limit;
-  if (limit > 0) {
-    display.drawCircle(cx, cy, 17, 0xE800);
-    drawBig(display, x + 10, y + 13, String(limit), 3, kCanvas);
-  } else {
-    drawCameraIcon(display, state.camera.type, x + 4, y + 6, kCanvas, kText);
-  }
-  drawClipped(font, x + 49, y + 30, width - 55, String(state.camera.distance) + "m", kText);
+  drawCameraIcon(display, state.camera.type, x + 5, y + 5, kText, kCapsule);
+  drawClipped(font, x + 4, y + 47, width - 8, String(state.camera.distance) + "m", kText);
+}
+
+void TftFrameRenderer::drawSpeedLimitSign(Adafruit_GFX& display, const NavState& state,
+                                           int16_t centerX, int16_t centerY) {
+  if (state.speed.limit <= 0) return;
+  display.fillCircle(centerX, centerY, 23, kText);
+  display.fillCircle(centerX, centerY, 20, kRed);
+  display.fillCircle(centerX, centerY, 16, kText);
+  const String value = String(state.speed.limit);
+  // Three-digit limits such as 120 need a smaller scale to stay inside the sign.
+  const uint8_t scale = value.length() >= 3 ? 2 : 3;
+  const int16_t textWidth = value.length() * 6 * scale;
+  drawBig(display, centerX - textWidth / 2, centerY - 4 * scale, value, scale, kCanvas);
 }
 
 namespace {
@@ -381,7 +765,7 @@ void TftFrameRenderer::drawNavigationTrafficPill(Adafruit_GFX& display, const Na
     return;
   }
   const LightState& light = state.lights[0];
-  drawTrafficPill(display, light, display.width() - trafficPillWidth(light, false) - 5, 5, false);
+  drawTrafficPill(display, light, 270 - trafficPillWidth(light, false), 5, false);
 }
 
 void TftFrameRenderer::drawCruiseTrafficPills(Adafruit_GFX& display, const NavState& state,
@@ -480,5 +864,20 @@ String TftFrameRenderer::formatCamera(const NavState& state) {
   if (limit > 0) {
     result += " " + String(limit);
   }
+  return result;
+}
+
+String TftFrameRenderer::formatTime(int64_t milliseconds) {
+  if (milliseconds < 0) {
+    return "--:--";
+  }
+  const int64_t totalSeconds = milliseconds / 1000;
+  const int minutes = static_cast<int>(totalSeconds / 60);
+  const int seconds = static_cast<int>(totalSeconds % 60);
+  String result = String(minutes) + ":";
+  if (seconds < 10) {
+    result += "0";
+  }
+  result += String(seconds);
   return result;
 }

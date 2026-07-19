@@ -4,6 +4,8 @@ import android.Manifest;
 import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothManager;
+import android.content.res.ColorStateList;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
@@ -12,11 +14,13 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.graphics.drawable.GradientDrawable;
 import android.provider.Settings;
 import android.text.InputType;
 import android.text.TextUtils;
 import android.net.Uri;
 import android.view.Gravity;
+import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
@@ -28,6 +32,7 @@ import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.Switch;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -41,6 +46,13 @@ import java.util.Map;
 public final class MainActivity extends Activity {
     private static final int REQUEST_NOTIFICATIONS = 100;
     private static final int REQUEST_BLE_PERMISSIONS = 101;
+    private static final String STATE_BLE_PERMISSION_REQUEST = "ble_permission_request";
+    private static final String STATE_NOTIFICATION_PERMISSION_REQUEST =
+            "notification_permission_request";
+    private static final String STATE_BATTERY_REQUEST_ATTEMPTED =
+            "battery_request_attempted";
+    private static final String STATE_PENDING_TEST_FRAME = "pending_test_frame";
+
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable statusPoller = new Runnable() {
         @Override
@@ -57,16 +69,32 @@ public final class MainActivity extends Activity {
     private List<TargetAppChoice> targetAppChoices;
     private EditText ipInput;
     private EditText portInput;
+    private EditText lyricOffsetInput;
     private TextView lastBroadcastText;
     private TextView lastSentText;
     private TextView payloadText;
+    private TextView trafficDiagnosticText;
+    private TextView musicStatusText;
     private TextView errorText;
     private TextView networkHintText;
     private boolean loadingSettings;
+    private boolean blePermissionRequestInFlight;
+    private boolean notificationPermissionRequestInFlight;
+    private boolean batteryRequestAttempted;
+    private boolean pendingTestFrame;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        if (savedInstanceState != null) {
+            blePermissionRequestInFlight = savedInstanceState.getBoolean(
+                    STATE_BLE_PERMISSION_REQUEST, false);
+            notificationPermissionRequestInFlight = savedInstanceState.getBoolean(
+                    STATE_NOTIFICATION_PERMISSION_REQUEST, false);
+            batteryRequestAttempted = savedInstanceState.getBoolean(
+                    STATE_BATTERY_REQUEST_ATTEMPTED, false);
+            pendingTestFrame = savedInstanceState.getBoolean(STATE_PENDING_TEST_FRAME, false);
+        }
         requestNotificationPermissionIfNeeded();
         buildUi();
         loadSettings();
@@ -76,6 +104,12 @@ public final class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         handler.post(statusPoller);
+        sendPendingTestFrameIfReady();
+        if (AppSettings.isEnabled(this)
+                && AppSettings.TRANSPORT_BLE.equals(AppSettings.getTransport(this))
+                && isBleReady()) {
+            requestBatteryExemption();
+        }
     }
 
     @Override
@@ -84,39 +118,89 @@ public final class MainActivity extends Activity {
         super.onPause();
     }
 
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        outState.putBoolean(STATE_BLE_PERMISSION_REQUEST, blePermissionRequestInFlight);
+        outState.putBoolean(STATE_NOTIFICATION_PERMISSION_REQUEST,
+                notificationPermissionRequestInFlight);
+        outState.putBoolean(STATE_BATTERY_REQUEST_ATTEMPTED, batteryRequestAttempted);
+        outState.putBoolean(STATE_PENDING_TEST_FRAME, pendingTestFrame);
+    }
+
     private void buildUi() {
         ScrollView scrollView = new ScrollView(this);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(20), dp(20), dp(20), dp(28));
+        root.setPadding(dp(14), dp(14), dp(14), dp(28));
+        root.setBackgroundColor(0xFFFAFBFC);
         scrollView.addView(root, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        TextView title = text("AMap ESP32 Forwarder", 24, true);
-        root.addView(title);
-        root.addView(text("监听高德地图车机版广播，并通过 UDP 或 BLE 发送完整导航快照到 ESP32-S3。", 14, false));
+        LinearLayout hero = new LinearLayout(this);
+        hero.setOrientation(LinearLayout.VERTICAL);
+        hero.setPadding(dp(4), dp(10), dp(4), dp(16));
+        TextView eyebrow = text("NAV  •  MUSIC  •  ESP32", 12, true);
+        eyebrow.setTextColor(0xFF0F766E);
+        hero.addView(eyebrow);
+        TextView title = text("行途 · ESP32", 27, true);
+        title.setTextColor(0xFF0B1726);
+        title.setPadding(0, dp(7), 0, dp(5));
+        hero.addView(title);
+        TextView subtitle = text("把高德导航与网易云逐字歌词送到车载屏幕", 14, false);
+        subtitle.setTextColor(0xFF64748B);
+        hero.addView(subtitle);
+        root.addView(hero, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         enableSwitch = new Switch(this);
         enableSwitch.setText("启用转发服务");
         enableSwitch.setTextSize(18);
-        enableSwitch.setPadding(0, dp(18), 0, dp(8));
-        root.addView(enableSwitch);
+        enableSwitch.setTextColor(0xFF0B1726);
+        int[][] switchStates = new int[][]{
+                new int[]{android.R.attr.state_checked}, new int[]{}
+        };
+        enableSwitch.setThumbTintList(new ColorStateList(switchStates,
+                new int[]{0xFF19C3B1, 0xFF94A3B8}));
+        enableSwitch.setTrackTintList(new ColorStateList(switchStates,
+                new int[]{0x6619C3B1, 0x335E7184}));
+        enableSwitch.setPadding(dp(16), dp(12), dp(16), dp(12));
+        LinearLayout.LayoutParams switchParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        switchParams.setMargins(0, dp(12), 0, dp(6));
+        root.addView(enableSwitch, switchParams);
         enableSwitch.setOnCheckedChangeListener(this::onEnableChanged);
 
-        root.addView(label("通信方式"));
+        LinearLayout connectionPanel = flatSection(root, "01", "连接设置");
+        LinearLayout navigationPanel = flatSection(root, "02", "导航设置");
+        LinearLayout musicPanel = flatSection(root, "03", "网易云设置");
+        LinearLayout devicePanel = flatSection(root, "04", "ESP32 设备设置");
+        LinearLayout developerPanel = flatSection(root, "05", "开发者选项");
+
+        musicStatusText = statusLine(musicPanel, "音乐读取", "正在检查通知使用权");
+        Button musicAccessButton = button("打开音乐读取权限");
+        musicAccessButton.setOnClickListener(v -> openMusicAccessSettings());
+        musicPanel.addView(musicAccessButton);
+        musicPanel.addView(label("歌词延迟校正（毫秒）"));
+        lyricOffsetInput = input("0");
+        lyricOffsetInput.setInputType(InputType.TYPE_CLASS_NUMBER
+                | InputType.TYPE_NUMBER_FLAG_SIGNED);
+        musicPanel.addView(lyricOffsetInput);
+        TextView musicHint = text("正数会让歌词提前，负数会让歌词延后；建议每次以 100–200 ms 微调。需要在系统“通知使用权”中允许本应用。", 12, false);
+        musicHint.setTextColor(0xFF4B5563);
+        musicPanel.addView(musicHint);
+
+        connectionPanel.addView(label("通信方式"));
         transportSpinner = new Spinner(this);
         ArrayAdapter<String> adapter = new ArrayAdapter<>(this,
                 android.R.layout.simple_spinner_dropdown_item,
                 new String[]{"UDP", "BLE"});
         transportSpinner.setAdapter(adapter);
-        root.addView(transportSpinner);
+        connectionPanel.addView(transportSpinner);
         transportSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
             public void onItemSelected(AdapterView<?> parent, android.view.View view,
                                        int position, long id) {
-                if (position == 1 && !loadingSettings) {
-                    requestBlePermissionsIfNeeded();
-                }
             }
 
             @Override
@@ -124,31 +208,42 @@ public final class MainActivity extends Activity {
             }
         });
 
-        root.addView(label("ESP32 IP"));
+        connectionPanel.addView(label("ESP32 IP"));
         ipInput = input("192.168.4.2");
         ipInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        root.addView(ipInput);
+        connectionPanel.addView(ipInput);
 
-        root.addView(label("UDP 端口"));
+        connectionPanel.addView(label("UDP 端口"));
         portInput = input("4210");
         portInput.setInputType(InputType.TYPE_CLASS_NUMBER);
-        root.addView(portInput);
+        connectionPanel.addView(portInput);
 
-        root.addView(label("目标高德应用"));
+        Button deviceSettingsButton = button("打开设备控制台");
+        deviceSettingsButton.setOnClickListener(v -> {
+            saveSettings();
+            startActivity(new Intent(this, Esp32SettingsActivity.class));
+        });
+        devicePanel.addView(deviceSettingsButton);
+        TextView deviceHint = text("在 App 内管理 Wi‑Fi、屏幕芯片、触摸、BLE 与 OTA；需能通过当前 IP 访问 ESP32。", 12, false);
+        deviceHint.setTextColor(0xFF64748B);
+        deviceHint.setPadding(0, dp(6), 0, 0);
+        devicePanel.addView(deviceHint);
+
+        navigationPanel.addView(label("目标高德应用"));
         targetAppSpinner = new Spinner(this);
         targetAppChoices = loadTargetAppChoices();
         ArrayAdapter<TargetAppChoice> targetAdapter = new ArrayAdapter<>(this,
                 android.R.layout.simple_spinner_dropdown_item, targetAppChoices);
         targetAppSpinner.setAdapter(targetAdapter);
-        root.addView(targetAppSpinner);
+        navigationPanel.addView(targetAppSpinner);
 
         targetPackageInput = input(AppSettings.DEFAULT_TARGET_PACKAGE);
         targetPackageInput.setInputType(InputType.TYPE_CLASS_TEXT
                 | InputType.TYPE_TEXT_VARIATION_URI);
-        root.addView(targetPackageInput);
+        navigationPanel.addView(targetPackageInput);
         TextView targetHint = text("下拉框会列出可见的高德/地图应用；共存版未列出时可直接填写包名。主动请求会发送给该应用。", 12, false);
         targetHint.setTextColor(0xFF4B5563);
-        root.addView(targetHint);
+        navigationPanel.addView(targetHint);
         targetAppSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
             public void onItemSelected(AdapterView<?> parent, android.view.View view,
@@ -182,27 +277,34 @@ public final class MainActivity extends Activity {
         Button testButton = button("发送测试帧");
         testButton.setOnClickListener(v -> {
             saveSettings();
+            loadingSettings = true;
             enableSwitch.setChecked(true);
+            loadingSettings = false;
             AppSettings.setEnabled(this, true);
+            if (!AppSettings.TRANSPORT_BLE.equals(AppSettings.getTransport(this))
+                    || isBleReady()) {
+                requestBatteryExemption();
+            }
             startForwarder(ForwarderService.ACTION_SEND_TEST);
             refreshStatus();
         });
-        buttonRow.addView(testButton, rowButtonParams());
+        developerPanel.addView(testButton);
 
-        root.addView(section("状态"));
-        lastBroadcastText = statusLine(root, "最近广播", "尚未收到");
-        lastSentText = statusLine(root, "最近发送", "尚未发送");
-        payloadText = statusLine(root, "Payload", "0 bytes");
-        errorText = statusLine(root, "最近错误", "无");
+        developerPanel.addView(section("状态"));
+        lastBroadcastText = statusLine(developerPanel, "最近广播", "尚未收到");
+        lastSentText = statusLine(developerPanel, "最近发送", "尚未发送");
+        payloadText = statusLine(developerPanel, "Payload", "0 bytes");
+        trafficDiagnosticText = statusLine(developerPanel, "巡航灯诊断", "尚未收到红绿灯广播");
+        errorText = statusLine(developerPanel, "最近错误", "无");
         networkHintText = text("", 14, false);
         networkHintText.setPadding(0, dp(12), 0, 0);
-        root.addView(networkHintText);
+        developerPanel.addView(networkHintText);
 
-        root.addView(section("连接排查"));
-        root.addView(text("1. 车机热点、手机和 ESP32 需要在同一网段。", 14, false));
-        root.addView(text("2. 如果测试帧发出但 ESP32 无显示，检查热点是否开启客户端隔离。", 14, false));
-        root.addView(text("3. ESP32 串口会打印本机 IP 和收到的 JSON 解析结果。", 14, false));
-        root.addView(text("4. BLE 会自动扫描并连接名称以 AMap-ESP32- 开头的开发板，无需先在系统设置中配对。", 14, false));
+        developerPanel.addView(section("连接排查"));
+        developerPanel.addView(text("1. 车机热点、手机和 ESP32 需要在同一网段。", 14, false));
+        developerPanel.addView(text("2. 如果测试帧发出但 ESP32 无显示，检查热点是否开启客户端隔离。", 14, false));
+        developerPanel.addView(text("3. ESP32 串口会打印本机 IP 和收到的 JSON 解析结果。", 14, false));
+        developerPanel.addView(text("4. BLE 会自动扫描并连接名称以 AMap-ESP32- 开头的开发板，无需先在系统设置中配对。", 14, false));
 
         setContentView(scrollView);
     }
@@ -214,7 +316,10 @@ public final class MainActivity extends Activity {
         saveSettings();
         AppSettings.setEnabled(this, isChecked);
         if (isChecked) {
-            requestBatteryExemption();
+            if (!AppSettings.TRANSPORT_BLE.equals(AppSettings.getTransport(this))
+                    || isBleReady()) {
+                requestBatteryExemption();
+            }
             startForwarder(ForwarderService.ACTION_START);
         } else {
             startForwarder(ForwarderService.ACTION_STOP);
@@ -228,19 +333,26 @@ public final class MainActivity extends Activity {
         transportSpinner.setSelection(AppSettings.TRANSPORT_BLE.equals(AppSettings.getTransport(this)) ? 1 : 0);
         ipInput.setText(AppSettings.getEsp32Ip(this));
         portInput.setText(String.valueOf(AppSettings.getUdpPort(this)));
+        lyricOffsetInput.setText(String.valueOf(AppSettings.getLyricOffsetMs(this)));
         String targetPackage = AppSettings.getTargetPackage(this);
         targetPackageInput.setText(targetPackage);
         targetAppSpinner.setSelection(findTargetAppPosition(targetPackage));
         enableSwitch.setChecked(enabled);
         loadingSettings = false;
         if (enabled) {
-            requestBatteryExemption();
+            if (AppSettings.TRANSPORT_BLE.equals(AppSettings.getTransport(this))) {
+                requestBlePermissionsIfNeeded();
+            }
+            if (!AppSettings.TRANSPORT_BLE.equals(AppSettings.getTransport(this))
+                    || isBleReady()) {
+                requestBatteryExemption();
+            }
             startForwarder(ForwarderService.ACTION_START);
         }
     }
 
     private void requestBatteryExemption() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+        if (notificationPermissionRequestInFlight || blePermissionRequestInFlight) {
             return;
         }
         try {
@@ -248,7 +360,7 @@ public final class MainActivity extends Activity {
             if (power != null && !power.isIgnoringBatteryOptimizations(getPackageName())) {
                 Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
                         Uri.parse("package:" + getPackageName()));
-                startActivity(intent);
+                tryStartSystemActivity(intent);
             }
         } catch (Throwable ignored) {
             // Some vendor ROMs block the standard request. The service remains
@@ -270,6 +382,12 @@ public final class MainActivity extends Activity {
         }
         AppSettings.setUdpPort(this, port);
         AppSettings.setTargetPackage(this, targetPackageInput.getText().toString());
+        int lyricOffsetMs = 0;
+        try {
+            lyricOffsetMs = Integer.parseInt(lyricOffsetInput.getText().toString().trim());
+        } catch (Throwable ignored) {
+        }
+        AppSettings.setLyricOffsetMs(this, lyricOffsetMs);
     }
 
     private List<TargetAppChoice> loadTargetAppChoices() {
@@ -375,6 +493,13 @@ public final class MainActivity extends Activity {
         lastBroadcastText.setText("最近广播: " + formatTime(AppSettings.getLastBroadcast(this)));
         lastSentText.setText("最近发送: " + formatTime(AppSettings.getLastSent(this)));
         payloadText.setText("Payload: " + AppSettings.getLastPayloadBytes(this) + " bytes");
+        String trafficDiagnostic = AppSettings.getLastTrafficDiagnostic(this);
+        trafficDiagnosticText.setText("巡航灯诊断: "
+                + (trafficDiagnostic.isEmpty() ? "尚未收到红绿灯广播" : trafficDiagnostic));
+        if (musicStatusText != null) {
+            musicStatusText.setText("音乐读取: " + (hasMusicListenerAccess()
+                    ? MusicStateStore.describe() : "未授权，请打开通知使用权"));
+        }
         String error = AppSettings.getLastError(this);
         errorText.setText("最近错误: " + (TextUtils.isEmpty(error) ? "无" : error));
         networkHintText.setText(buildHint(error));
@@ -408,49 +533,196 @@ public final class MainActivity extends Activity {
     }
 
     private void requestNotificationPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
-                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQUEST_NOTIFICATIONS);
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
+                || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                == PackageManager.PERMISSION_GRANTED) {
+            return;
         }
+        if (notificationPermissionRequestInFlight || blePermissionRequestInFlight) {
+            return;
+        }
+        try {
+            notificationPermissionRequestInFlight = true;
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                    REQUEST_NOTIFICATIONS);
+        } catch (RuntimeException ignored) {
+            notificationPermissionRequestInFlight = false;
+        }
+    }
+
+    private void openMusicAccessSettings() {
+        Intent intent = new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS);
+        if (!tryStartSystemActivity(intent)) {
+            tryStartSystemActivity(new Intent(Settings.ACTION_SETTINGS));
+        }
+    }
+
+    private boolean hasMusicListenerAccess() {
+        String enabled = Settings.Secure.getString(getContentResolver(),
+                "enabled_notification_listeners");
+        if (TextUtils.isEmpty(enabled)) {
+            return false;
+        }
+        ComponentName expected = new ComponentName(this, MusicNotificationListener.class);
+        for (String item : enabled.split(":")) {
+            ComponentName component = ComponentName.unflattenFromString(item);
+            if (expected.equals(component)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void requestBlePermissionsIfNeeded() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED
-                    || checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(new String[]{
-                        Manifest.permission.BLUETOOTH_SCAN,
-                        Manifest.permission.BLUETOOTH_CONNECT
-                }, REQUEST_BLE_PERMISSIONS);
+        if (!hasBlePermissions()) {
+            if (blePermissionRequestInFlight || notificationPermissionRequestInFlight) {
                 return;
             }
-        } else if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
-                != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION},
-                    REQUEST_BLE_PERMISSIONS);
+            String[] permissions = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                    ? new String[]{Manifest.permission.BLUETOOTH_SCAN,
+                    Manifest.permission.BLUETOOTH_CONNECT}
+                    : new String[]{Manifest.permission.ACCESS_FINE_LOCATION};
+            try {
+                blePermissionRequestInFlight = true;
+                requestPermissions(permissions, REQUEST_BLE_PERMISSIONS);
+            } catch (RuntimeException error) {
+                blePermissionRequestInFlight = false;
+                reportBleProblem("无法请求 BLE 权限，请在应用权限设置中允许附近设备权限");
+            }
             return;
         }
-        BluetoothManager manager = (BluetoothManager) getSystemService(BLUETOOTH_SERVICE);
-        BluetoothAdapter adapter = manager == null ? null : manager.getAdapter();
-        if (adapter != null && !adapter.isEnabled()) {
-            try {
-                startActivity(new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE));
-            } catch (Throwable ignored) {
+
+        BluetoothAdapter adapter = bluetoothAdapter();
+        if (adapter == null) {
+            reportBleProblem("此车机不支持 BLE");
+            return;
+        }
+        try {
+            if (adapter.isEnabled()) {
+                return;
             }
+        } catch (RuntimeException error) {
+            reportBleProblem("无法读取车机蓝牙状态，请检查附近设备权限");
+            return;
+        }
+
+        BleEnableFlow.LaunchResult launchResult = BleEnableFlow.launch(
+                new BleEnableFlow.Launcher() {
+                    @Override
+                    public boolean launchEnableRequest() {
+                        return tryStartSystemActivity(
+                                new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE));
+                    }
+
+                    @Override
+                    public boolean launchBluetoothSettings() {
+                        return tryStartSystemActivity(
+                                new Intent(Settings.ACTION_BLUETOOTH_SETTINGS));
+                    }
+                });
+        if (launchResult == BleEnableFlow.LaunchResult.SETTINGS_OPENED) {
+            String message = "请在车机蓝牙设置中开启蓝牙，完成后返回本应用";
+            AppSettings.noteError(this, message);
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (launchResult == BleEnableFlow.LaunchResult.ENABLE_REQUESTED) {
+            return;
+        }
+
+        reportBleProblem("车机未提供可用的蓝牙开启页面，请从系统设置手动开启蓝牙");
+    }
+
+    private boolean hasBlePermissions() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            return checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)
+                    == PackageManager.PERMISSION_GRANTED
+                    && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
+                    == PackageManager.PERMISSION_GRANTED;
+        }
+        return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private boolean isBleReady() {
+        if (!hasBlePermissions()) {
+            return false;
+        }
+        BluetoothAdapter adapter = bluetoothAdapter();
+        try {
+            return adapter != null && adapter.isEnabled();
+        } catch (RuntimeException ignored) {
+            return false;
         }
     }
 
+    private BluetoothAdapter bluetoothAdapter() {
+        BluetoothManager manager = (BluetoothManager) getSystemService(BLUETOOTH_SERVICE);
+        return manager == null ? null : manager.getAdapter();
+    }
+
+    private boolean tryStartSystemActivity(Intent intent) {
+        try {
+            if (intent.resolveActivity(getPackageManager()) == null) {
+                return false;
+            }
+            startActivity(intent);
+            return true;
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    private void reportBleProblem(String message) {
+        AppSettings.noteError(this, message);
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+    }
+
+    private void sendPendingTestFrameIfReady() {
+        if (!pendingTestFrame) {
+            return;
+        }
+        if (AppSettings.TRANSPORT_BLE.equals(AppSettings.getTransport(this)) && !isBleReady()) {
+            return;
+        }
+        pendingTestFrame = false;
+        startForwarder(ForwarderService.ACTION_SEND_TEST);
+    }
+
     @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+    public void onRequestPermissionsResult(int requestCode, String[] permissions,
+                                           int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_NOTIFICATIONS) {
+            notificationPermissionRequestInFlight = false;
+            if (AppSettings.isEnabled(this)
+                    && AppSettings.TRANSPORT_BLE.equals(AppSettings.getTransport(this))) {
+                requestBlePermissionsIfNeeded();
+                if (isBleReady()) {
+                    requestBatteryExemption();
+                }
+            } else if (AppSettings.isEnabled(this)) {
+                requestBatteryExemption();
+            }
+            return;
+        }
         if (requestCode != REQUEST_BLE_PERMISSIONS) {
             return;
         }
-        boolean granted = grantResults.length > 0;
-        for (int result : grantResults) {
-            granted &= result == PackageManager.PERMISSION_GRANTED;
+        blePermissionRequestInFlight = false;
+        boolean granted = hasBlePermissions();
+        if (!granted) {
+            reportBleProblem("BLE 权限未授予，无法启动 BLE 转发");
+            return;
         }
-        if (granted && AppSettings.isEnabled(this)
+        if (transportSpinner.getSelectedItemPosition() != 1) {
+            return;
+        }
+        requestBlePermissionsIfNeeded();
+        if (isBleReady()) {
+            requestBatteryExemption();
+        }
+        if (AppSettings.isEnabled(this)
                 && AppSettings.TRANSPORT_BLE.equals(AppSettings.getTransport(this))) {
             startForwarder(ForwarderService.ACTION_START);
         }
@@ -458,12 +730,32 @@ public final class MainActivity extends Activity {
 
     private TextView label(String value) {
         TextView textView = text(value, 13, true);
+        textView.setTextColor(0xFF334155);
         textView.setPadding(0, dp(14), 0, dp(4));
         return textView;
     }
 
+    private LinearLayout flatSection(LinearLayout root, String index, String title) {
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        TextView heading = text(index + "  " + title, 20, true);
+        heading.setTextColor(0xFF0F766E);
+        heading.setPadding(0, dp(24), 0, dp(10));
+        content.addView(heading);
+        View divider = new View(this);
+        divider.setBackgroundColor(0xFFD7DEE7);
+        content.addView(divider, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(1)));
+        content.setPadding(dp(4), 0, dp(4), dp(8));
+        LinearLayout.LayoutParams contentParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        root.addView(content, contentParams);
+        return content;
+    }
+
     private TextView section(String value) {
         TextView textView = text(value, 18, true);
+        textView.setTextColor(0xFF0F766E);
         textView.setPadding(0, dp(20), 0, dp(8));
         return textView;
     }
@@ -479,10 +771,9 @@ public final class MainActivity extends Activity {
         TextView textView = new TextView(this);
         textView.setText(value);
         textView.setTextSize(sp);
-        textView.setTextColor(0xFF111827);
-        if (bold) {
-            textView.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        }
+        textView.setTextColor(0xFF0F172A);
+        textView.setTypeface(android.graphics.Typeface.create(
+                bold ? "sans-serif-medium" : "sans-serif", 0));
         textView.setLineSpacing(0, 1.08f);
         return textView;
     }
@@ -492,6 +783,12 @@ public final class MainActivity extends Activity {
         editText.setHint(hint);
         editText.setSingleLine(true);
         editText.setTextSize(16);
+        editText.setTextColor(0xFF0F172A);
+        editText.setHintTextColor(0xFF94A3B8);
+        editText.setPadding(dp(13), dp(11), dp(13), dp(11));
+        GradientDrawable background = rounded(0xFFF8FAFC, 10);
+        background.setStroke(dp(1), 0xFFCBD5E1);
+        editText.setBackground(background);
         return editText;
     }
 
@@ -499,7 +796,18 @@ public final class MainActivity extends Activity {
         Button button = new Button(this);
         button.setText(text);
         button.setAllCaps(false);
+        button.setTextColor(0xFFFFFFFF);
+        button.setTextSize(15);
+        button.setBackgroundTintList(ColorStateList.valueOf(0xFF0F766E));
+        button.setPadding(dp(14), dp(10), dp(14), dp(10));
         return button;
+    }
+
+    private GradientDrawable rounded(int color, int radiusDp) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(color);
+        drawable.setCornerRadius(dp(radiusDp));
+        return drawable;
     }
 
     private LinearLayout.LayoutParams rowButtonParams() {

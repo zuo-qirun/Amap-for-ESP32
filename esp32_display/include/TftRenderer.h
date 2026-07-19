@@ -4,10 +4,12 @@
 #include <Arduino.h>
 #include "NavState.h"
 
-// Buffered ST7789 dashboard. A complete frame is composed in PSRAM before it
-// is sent to the panel, so users never see the clear-and-redraw process.
+// Buffered SPI TFT dashboard. A complete frame is composed in PSRAM before it
+// is sent to the ST7789V or ILI9341V panel, so users never see the
+// clear-and-redraw process.
 class TftRenderer {
 public:
+  ~TftRenderer();
   void begin();
   bool isReady() const;
   void render(const NavState& state, bool wifiConnected, bool bleConnected, const String& ip,
@@ -32,6 +34,9 @@ private:
 
   Canvas canvas;
   Canvas previousFrame;
+  uint16_t* transferBuffer = nullptr;
+  void pushRectangle(int16_t x, int16_t y, int16_t width, int16_t height,
+                     const uint16_t* source, int16_t sourceStride);
   bool ready = false;
   bool frameDrawn = false;
   uint32_t lastFrameSignature = 0;

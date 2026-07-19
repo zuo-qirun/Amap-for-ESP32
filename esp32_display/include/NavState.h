@@ -82,6 +82,34 @@ struct GuideInfoState {
   String nextServiceAreaDistance;
 };
 
+struct MusicState {
+  bool active = false;
+  bool playing = false;
+  String source;
+  int64_t songId = -1;
+  String title;
+  String artist;
+  String album;
+  String coverUrl;
+  int64_t positionMs = 0;
+  int64_t durationMs = -1;
+  String previousLyric;
+  String lyric;
+  String translatedLyric;
+  String nextLyric;
+  String highlightedLyric;
+  String currentWord;
+  int64_t lineStartMs = -1;
+  int64_t lineDurationMs = 0;
+  int64_t wordStartMs = -1;
+  int64_t wordDurationMs = 0;
+  int wordProgressPermille = 0;
+  unsigned long receivedAt = 0;
+
+  int64_t positionAt(unsigned long now) const;
+  int wordProgressAt(unsigned long now) const;
+};
+
 struct NavState {
   static const uint8_t MAX_LIGHTS = 4;
 
@@ -100,6 +128,7 @@ struct NavState {
   RouteState route;
   RoadInfoState roadInfo;
   GuideInfoState guide;
+  MusicState music;
   String alert;
   String detail;
   uint32_t seq = 0;

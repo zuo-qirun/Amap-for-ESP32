@@ -70,20 +70,22 @@
 // Default: common 0.96" SSD1306 128x64 I2C OLED.
 #define AMAP_OLED_DRIVER AMAP_OLED_DRIVER_SSD1306_12864
 
-// The OLED renderer is retained only as legacy source code. Hardware output is
-// now always the selected 2.8-inch ST7789 module (240x320 physical pixels),
-// pixels and is normally used in 320x240 landscape (rotation 1). Its adapter
-// exposes VCC, GND, CS, RESET, DC, MOSI, SCK, LED and optional MISO; no touch
-// pins are needed for the no-touch module. This S3 mapping avoids the USB
-// pins, bootstrapping pins and the OLED's GPIO8/GPIO9 I2C bus.
+// Hongxun 28005: 2.8-inch, 240x320 physical pixels, 3.3 V logic and four-wire
+// SPI. The module may contain an ST7789V or ILI9341V display controller and is
+// normally used in 320x240 landscape (rotation 1).
 #define AMAP_TFT_DRIVER_ST7789 1
 #define AMAP_TFT_DRIVER_ILI9341 2
 #ifndef AMAP_TFT_DRIVER
 #define AMAP_TFT_DRIVER AMAP_TFT_DRIVER_ST7789
 #endif
+#define AMAP_TFT_NATIVE_WIDTH 240
+#define AMAP_TFT_NATIVE_HEIGHT 320
 #define AMAP_TFT_WIDTH 320
 #define AMAP_TFT_HEIGHT 240
 #define AMAP_TFT_ROTATION 1
+// ESP32-S3's Arduino SPI divider rounds a requested 60 MHz down to 40 MHz.
+// Use the native 80 MHz clock so this setting actually increases throughput.
+#define AMAP_TFT_SPI_FREQUENCY 80000000UL
 #define AMAP_TFT_SCLK_PIN 12
 #define AMAP_TFT_MOSI_PIN 11
 #define AMAP_TFT_MISO_PIN 13
@@ -94,6 +96,27 @@
 // Adafruit's ST7789 init sequence enables panel inversion by default. This
 // module displays the intended RGB565 colours with inversion disabled.
 #define AMAP_TFT_INVERT_COLORS 0
+
+// The capacitive 28005 variant uses an FT6336U over I2C. Header pins 10-14 are
+// shared with the resistive-touch option; for capacitive touch they are SCL,
+// RST, SDA, NC and INT respectively. GPIO8/GPIO9 reuse the legacy OLED I2C
+// mapping, which is otherwise idle while the TFT renderer is selected.
+#define AMAP_TFT_TOUCH_DRIVER_NONE 0
+#define AMAP_TFT_TOUCH_DRIVER_FT6336U 1
+#ifndef AMAP_TFT_TOUCH_DRIVER
+#define AMAP_TFT_TOUCH_DRIVER AMAP_TFT_TOUCH_DRIVER_NONE
+#endif
+#define AMAP_TFT_TOUCH_SDA_PIN AMAP_OLED_SDA_PIN
+#define AMAP_TFT_TOUCH_SCL_PIN AMAP_OLED_SCL_PIN
+#define AMAP_TFT_TOUCH_RST_PIN 17
+#define AMAP_TFT_TOUCH_INT_PIN 18
+#define AMAP_TFT_TOUCH_I2C_ADDRESS 0x38
+#define AMAP_TFT_TOUCH_THRESHOLD 40
+#define AMAP_TFT_TOUCH_I2C_FREQUENCY 400000UL
+// Transform the controller's portrait coordinates to rotation-1 landscape.
+#define AMAP_TFT_TOUCH_SWAP_XY 1
+#define AMAP_TFT_TOUCH_INVERT_X 1
+#define AMAP_TFT_TOUCH_INVERT_Y 0
 
 // 1 enables a U8g2 CJK-capable font for Chinese roads/labels. Set to 0 if
 // firmware size is tight or your display only needs ASCII.

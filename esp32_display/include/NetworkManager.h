@@ -9,6 +9,7 @@
 
 #include "NavState.h"
 #include "BleReceiver.h"
+#include "HardwareSettings.h"
 #include "OtaManager.h"
 #include "TftPreviewRenderer.h"
 
@@ -54,12 +55,14 @@ private:
   bool reconnectScheduled = false;
   bool udpStarted = false;
   bool developerPreviewEnabled = false;
+  HardwareSettings hardwareSettings;
   bool manualUploadActive = false;
   bool manualUploadSucceeded = false;
   String manualUploadError;
   String manualUploadFilename;
   size_t manualUploadWritten = 0;
   unsigned long manualRebootAt = 0;
+  unsigned long hardwareRebootAt = 0;
   unsigned long lastReconnectAttempt = 0;
   unsigned long connectStartedAt = 0;
   unsigned long reconnectAt = 0;
@@ -82,6 +85,7 @@ private:
   void handleOtaCheck();
   void handleOtaUpgrade();
   void handleDeveloperPreview();
+  void handleHardwareSettings();
   void handleBleClear();
   void handleManualFirmwareUpload();
   void handleManualFirmwareUploadComplete();

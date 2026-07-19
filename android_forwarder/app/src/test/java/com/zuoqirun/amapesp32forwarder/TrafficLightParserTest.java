@@ -165,6 +165,18 @@ public class TrafficLightParserTest {
         assertLight(result, 0, 4, 4, 9);
     }
 
+    @Test
+    public void cruiseActionCanParseUnlistedCameraLightKey() {
+        Map<String, Object> extras = new HashMap<>();
+        extras.put("vendorCameraLightPayloadV2",
+                "CameraLightInfo{direction=2,status=0,countDown=13}");
+
+        TrafficLightParser.Result result = TrafficLightParser.parse(extras, true, -1, 0);
+
+        assertTrue(result.handled);
+        assertLight(result, 0, 4, 1, 13);
+    }
+
     private static Map<String, Object> cruisePayload(String lightsData) {
         Map<String, Object> extras = new HashMap<>();
         extras.put("KEY_TYPE", AMapConstants.KEY_TYPE_TRAFFIC_LIGHT);

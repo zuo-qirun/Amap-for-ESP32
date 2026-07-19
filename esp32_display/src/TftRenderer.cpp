@@ -1,19 +1,46 @@
 #include "TftRenderer.h"
 
+#include "Config.h"
+
+#include <Adafruit_ILI9341.h>
+#include <Adafruit_SPITFT.h>
 #include <Adafruit_ST7789.h>
 #include <SPI.h>
 #include <U8g2_for_Adafruit_GFX.h>
 #include <esp_heap_caps.h>
 
-#include "Config.h"
+#include "HardwareSettings.h"
 #include "TftFrameRenderer.h"
 
 namespace {
-Adafruit_ST7789 tft(AMAP_TFT_CS_PIN, AMAP_TFT_DC_PIN, AMAP_TFT_RST_PIN);
+Adafruit_ST7789 st7789(AMAP_TFT_CS_PIN, AMAP_TFT_DC_PIN, AMAP_TFT_RST_PIN);
+Adafruit_ILI9341 ili9341(AMAP_TFT_CS_PIN, AMAP_TFT_DC_PIN, AMAP_TFT_RST_PIN);
+Adafruit_SPITFT* activePanel = nullptr;
 U8G2_FOR_ADAFRUIT_GFX tftFont;
 
 constexpr size_t kPixels = AMAP_TFT_WIDTH * AMAP_TFT_HEIGHT;
 constexpr size_t kPixelBytes = kPixels * sizeof(uint16_t);
+constexpr size_t kTransferPixels = 8U * 1024U;  // 16 KB internal DMA-capable staging
+constexpr size_t kTransferBytes = kTransferPixels * sizeof(uint16_t);
+constexpr int16_t kDirtyTileWidth = 16;
+constexpr int16_t kDirtyTileHeight = 8;
+constexpr int16_t kDirtyTileColumns = AMAP_TFT_WIDTH / kDirtyTileWidth;
+constexpr int16_t kDirtyTileRows = AMAP_TFT_HEIGHT / kDirtyTileHeight;
+constexpr size_t kDirtyTileCount = kDirtyTileColumns * kDirtyTileRows;
+constexpr size_t kFullRefreshDirtyTiles = kDirtyTileCount * 45 / 100;
+constexpr size_t kMaxDirtyRectangles = 96;
+
+static_assert(AMAP_TFT_WIDTH % kDirtyTileWidth == 0,
+              "TFT width must be divisible by dirty tile width");
+static_assert(AMAP_TFT_HEIGHT % kDirtyTileHeight == 0,
+              "TFT height must be divisible by dirty tile height");
+
+struct DirtyRectangle {
+  int16_t x;
+  int16_t y;
+  int16_t width;
+  int16_t height;
+};
 
 void hashBytes(uint32_t& hash, const void* data, size_t length) {
   const uint8_t* bytes = static_cast<const uint8_t*>(data);
@@ -34,18 +61,55 @@ void hashString(uint32_t& hash, const String& value) {
   hashValue(hash, separator);
 }
 
+void hashMusic(uint32_t& hash, const MusicState& music, bool includePosition,
+               unsigned long now) {
+  hashValue(hash, music.active);
+  hashValue(hash, music.playing);
+  hashValue(hash, music.songId);
+  hashString(hash, music.title);
+  hashString(hash, music.artist);
+  hashString(hash, music.album);
+  hashString(hash, music.coverUrl);
+  if (includePosition) {
+    const int64_t positionFrame = music.positionAt(now) / 33;
+    hashValue(hash, positionFrame);
+  }
+  hashValue(hash, music.durationMs);
+  hashString(hash, music.previousLyric);
+  hashString(hash, music.lyric);
+  hashString(hash, music.translatedLyric);
+  hashString(hash, music.nextLyric);
+  hashString(hash, music.highlightedLyric);
+  hashString(hash, music.currentWord);
+  hashValue(hash, music.lineStartMs);
+  hashValue(hash, music.lineDurationMs);
+  hashValue(hash, music.wordStartMs);
+  hashValue(hash, music.wordDurationMs);
+  if (includePosition) {
+    const int progressFrame = music.wordProgressAt(now);
+    hashValue(hash, progressFrame);
+  }
+}
+
 uint32_t frameSignature(const NavState& state, bool wifiConnected, bool bleConnected,
-                        const String& ip, uint16_t port, unsigned long silenceMs) {
+                         const String& ip, uint16_t port, unsigned long silenceMs,
+                         unsigned long now) {
   uint32_t hash = 2166136261UL;
   const bool connected = wifiConnected || bleConnected;
-  const uint8_t screenState = !connected ? 0 : (!state.active || silenceMs > AMAP_STANDBY_MS)
-                                               ? 1
-                                               : (silenceMs > AMAP_STALE_MS ? 2 : 3);
+  const uint8_t screenState = !connected ? 0
+                              : silenceMs > AMAP_STANDBY_MS ? 1
+                              : silenceMs > AMAP_STALE_MS ? 2
+                              : state.active ? 3
+                              : state.music.active ? 4 : 1;
   hashValue(hash, screenState);
   hashValue(hash, wifiConnected);
   hashValue(hash, bleConnected);
   hashString(hash, ip);
   hashValue(hash, port);
+  if (screenState == 4) {
+    hashMusic(hash, state.music, true, now);
+    return hash;
+  }
   if (screenState != 3) {
     return hash;
   }
@@ -93,6 +157,9 @@ uint32_t frameSignature(const NavState& state, bool wifiConnected, bool bleConne
   hashString(hash, state.guide.nextServiceAreaDistance);
   hashString(hash, state.alert);
   hashString(hash, state.detail);
+  if (state.music.active) {
+    hashMusic(hash, state.music, true, now);
+  }
   return hash;
 }
 }  // namespace
@@ -144,32 +211,58 @@ void TftRenderer::Canvas::fillScreen(uint16_t color) {
   for (size_t i = 0; i < kPixels; ++i) buffer[i] = color;
 }
 
+TftRenderer::~TftRenderer() {
+  free(transferBuffer);
+}
+
 void TftRenderer::begin() {
   if (AMAP_TFT_SCLK_PIN < 0 || AMAP_TFT_MOSI_PIN < 0 || AMAP_TFT_CS_PIN < 0 ||
       AMAP_TFT_DC_PIN < 0 || AMAP_TFT_RST_PIN < 0 || AMAP_TFT_BL_PIN < 0) {
-    Serial.println("TFT disabled: ST7789 pins are not configured");
+    Serial.println("TFT disabled: SPI panel pins are not configured");
     return;
   }
 
   pinMode(AMAP_TFT_BL_PIN, OUTPUT);
   digitalWrite(AMAP_TFT_BL_PIN, LOW);
   SPI.begin(AMAP_TFT_SCLK_PIN, AMAP_TFT_MISO_PIN, AMAP_TFT_MOSI_PIN, AMAP_TFT_CS_PIN);
-  tft.init(240, 320, SPI_MODE0);
-  tft.setRotation(AMAP_TFT_ROTATION);
-  tft.setSPISpeed(40000000);
-  tft.invertDisplay(AMAP_TFT_INVERT_COLORS != 0);
-  if (!canvas.begin() || !previousFrame.begin()) {
-    Serial.println("TFT disabled: unable to allocate ST7789 frame buffers");
+  const HardwareSettings hardware = HardwareSettings::load();
+  if (hardware.tftDriver == AMAP_TFT_DRIVER_ILI9341) {
+    ili9341.begin(AMAP_TFT_SPI_FREQUENCY);
+    ili9341.setRotation(AMAP_TFT_ROTATION);
+    ili9341.setSPISpeed(AMAP_TFT_SPI_FREQUENCY);
+    ili9341.invertDisplay(AMAP_TFT_INVERT_COLORS != 0);
+    activePanel = &ili9341;
+  } else {
+    st7789.init(AMAP_TFT_NATIVE_WIDTH, AMAP_TFT_NATIVE_HEIGHT, SPI_MODE0);
+    st7789.setRotation(AMAP_TFT_ROTATION);
+    st7789.setSPISpeed(AMAP_TFT_SPI_FREQUENCY);
+    st7789.invertDisplay(AMAP_TFT_INVERT_COLORS != 0);
+    activePanel = &st7789;
+  }
+  transferBuffer = static_cast<uint16_t*>(heap_caps_malloc(
+      kTransferBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
+  if (transferBuffer == nullptr) {
+    transferBuffer = static_cast<uint16_t*>(malloc(kTransferBytes));
+  }
+  if (!canvas.begin() || !previousFrame.begin() || transferBuffer == nullptr) {
+    Serial.println("TFT disabled: unable to allocate frame buffers");
     return;
   }
-  tft.fillScreen(0x0861);
+  activePanel->fillScreen(0x0861);
   tftFont.begin(canvas);
   tftFont.setFontMode(1);
   tftFont.setFont(u8g2_font_wqy12_t_gb2312);
   digitalWrite(AMAP_TFT_BL_PIN, HIGH);
   ready = true;
-  Serial.printf("ST7789 ready: %dx%d, SPI SCK=%d MOSI=%d CS=%d\n", tft.width(), tft.height(),
-                AMAP_TFT_SCLK_PIN, AMAP_TFT_MOSI_PIN, AMAP_TFT_CS_PIN);
+  const size_t psramTotal = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+  const size_t psramFree = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+  const size_t psramLargest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+  Serial.printf("%s ready: %dx%d, 3-frame buffered, PSRAM=%u/%u free, largest=%u, SPI SCK=%d MOSI=%d MISO=%d CS=%d\n",
+                hardware.tftDriverName(), activePanel->width(), activePanel->height(),
+                static_cast<unsigned>(psramFree), static_cast<unsigned>(psramTotal),
+                static_cast<unsigned>(psramLargest),
+                AMAP_TFT_SCLK_PIN, AMAP_TFT_MOSI_PIN,
+                AMAP_TFT_MISO_PIN, AMAP_TFT_CS_PIN);
 }
 
 bool TftRenderer::isReady() const {
@@ -182,41 +275,137 @@ void TftRenderer::render(const NavState& state, bool wifiConnected, bool bleConn
     return;
   }
   const bool connected = wifiConnected || bleConnected;
+  const unsigned long now = millis();
   const uint32_t signature =
-      frameSignature(state, wifiConnected, bleConnected, ip, port, silenceMs);
+      frameSignature(state, wifiConnected, bleConnected, ip, port, silenceMs, now);
   if (frameDrawn && signature == lastFrameSignature) {
     return;
   }
 
+  const uint32_t frameStartedAt = micros();
   TftFrameRenderer::render(canvas, tftFont, state, wifiConnected, bleConnected, ip, port,
                            silenceMs);
+  const uint32_t composedAt = micros();
   uint16_t* current = canvas.pixels();
   uint16_t* previous = previousFrame.pixels();
   if (!frameDrawn) {
-    tft.drawRGBBitmap(0, 0, current, AMAP_TFT_WIDTH, AMAP_TFT_HEIGHT);
+    const uint32_t transferStartedAt = micros();
+    pushRectangle(0, 0, AMAP_TFT_WIDTH, AMAP_TFT_HEIGHT,
+                  current, AMAP_TFT_WIDTH);
     memcpy(previous, current, kPixelBytes);
+    Serial.printf("TFT full frame: compose=%lu ms transfer=%lu ms total=%lu ms\n",
+                  static_cast<unsigned long>((composedAt - frameStartedAt) / 1000),
+                  static_cast<unsigned long>((micros() - transferStartedAt) / 1000),
+                  static_cast<unsigned long>((micros() - frameStartedAt) / 1000));
   } else {
-    // Static pixels remain untouched on the panel. For each scanline, transfer
-    // only the span that differs from the last displayed frame. This keeps
-    // distance/speed/time updates small without hard-coding layout rectangles.
-    for (int16_t y = 0; y < AMAP_TFT_HEIGHT; ++y) {
-      uint16_t* currentRow = current + y * AMAP_TFT_WIDTH;
-      uint16_t* previousRow = previous + y * AMAP_TFT_WIDTH;
-      if (memcmp(currentRow, previousRow, AMAP_TFT_WIDTH * sizeof(uint16_t)) == 0) {
-        continue;
+    // Detect changes in small tiles, then merge identical horizontal runs on
+    // adjacent tile rows. The third PSRAM buffer packs each merged rectangle
+    // into contiguous memory, avoiding one SPI transaction per scanline.
+    bool dirtyTiles[kDirtyTileRows][kDirtyTileColumns] = {};
+    size_t dirtyTileCount = 0;
+    for (int16_t tileY = 0; tileY < kDirtyTileRows; ++tileY) {
+      for (int16_t tileX = 0; tileX < kDirtyTileColumns; ++tileX) {
+        const int16_t x = tileX * kDirtyTileWidth;
+        const int16_t y = tileY * kDirtyTileHeight;
+        bool dirty = false;
+        for (int16_t row = 0; row < kDirtyTileHeight && !dirty; ++row) {
+          const size_t offset = (y + row) * AMAP_TFT_WIDTH + x;
+          dirty = memcmp(current + offset, previous + offset,
+                         kDirtyTileWidth * sizeof(uint16_t)) != 0;
+        }
+        dirtyTiles[tileY][tileX] = dirty;
+        dirtyTileCount += dirty ? 1 : 0;
       }
+    }
 
-      int16_t left = 0;
-      while (left < AMAP_TFT_WIDTH && currentRow[left] == previousRow[left]) ++left;
-      int16_t right = AMAP_TFT_WIDTH - 1;
-      while (right > left && currentRow[right] == previousRow[right]) --right;
-      const int16_t width = right - left + 1;
-      tft.drawRGBBitmap(left, y, currentRow + left, width, 1);
-      memcpy(previousRow + left, currentRow + left, width * sizeof(uint16_t));
+    DirtyRectangle rectangles[kMaxDirtyRectangles];
+    size_t rectangleCount = 0;
+    bool tooFragmented = false;
+    for (int16_t tileY = 0; tileY < kDirtyTileRows && !tooFragmented; ++tileY) {
+      int16_t tileX = 0;
+      while (tileX < kDirtyTileColumns) {
+        while (tileX < kDirtyTileColumns && !dirtyTiles[tileY][tileX]) ++tileX;
+        if (tileX >= kDirtyTileColumns) break;
+        const int16_t runStart = tileX;
+        while (tileX < kDirtyTileColumns && dirtyTiles[tileY][tileX]) ++tileX;
+        const int16_t runWidth = (tileX - runStart) * kDirtyTileWidth;
+        const int16_t runX = runStart * kDirtyTileWidth;
+        const int16_t runY = tileY * kDirtyTileHeight;
+
+        bool extended = false;
+        for (size_t i = 0; i < rectangleCount; ++i) {
+          DirtyRectangle& rectangle = rectangles[i];
+          if (rectangle.x == runX && rectangle.width == runWidth &&
+              rectangle.y + rectangle.height == runY) {
+            rectangle.height += kDirtyTileHeight;
+            extended = true;
+            break;
+          }
+        }
+        if (!extended) {
+          if (rectangleCount >= kMaxDirtyRectangles) {
+            tooFragmented = true;
+            break;
+          }
+          rectangles[rectangleCount++] = {
+              runX, runY, runWidth, kDirtyTileHeight};
+        }
+      }
+    }
+
+    if (tooFragmented || dirtyTileCount >= kFullRefreshDirtyTiles) {
+      const uint32_t transferStartedAt = micros();
+      pushRectangle(0, 0, AMAP_TFT_WIDTH, AMAP_TFT_HEIGHT,
+                    current, AMAP_TFT_WIDTH);
+      memcpy(previous, current, kPixelBytes);
+      Serial.printf("TFT full refresh: dirty=%u/%u compose=%lu ms transfer=%lu ms total=%lu ms\n",
+                    static_cast<unsigned>(dirtyTileCount),
+                    static_cast<unsigned>(kDirtyTileCount),
+                    static_cast<unsigned long>((composedAt - frameStartedAt) / 1000),
+                    static_cast<unsigned long>((micros() - transferStartedAt) / 1000),
+                    static_cast<unsigned long>((micros() - frameStartedAt) / 1000));
+    } else {
+      for (size_t i = 0; i < rectangleCount; ++i) {
+        const DirtyRectangle& rectangle = rectangles[i];
+        for (int16_t row = 0; row < rectangle.height; ++row) {
+          const size_t sourceOffset =
+              (rectangle.y + row) * AMAP_TFT_WIDTH + rectangle.x;
+          memcpy(previous + sourceOffset,
+                 current + sourceOffset,
+                 rectangle.width * sizeof(uint16_t));
+        }
+        pushRectangle(rectangle.x, rectangle.y, rectangle.width, rectangle.height,
+                      current + rectangle.y * AMAP_TFT_WIDTH + rectangle.x,
+                      AMAP_TFT_WIDTH);
+      }
     }
   }
   lastFrameSignature = signature;
   frameDrawn = true;
   (void)ip;
   (void)port;
+}
+
+void TftRenderer::pushRectangle(int16_t x, int16_t y, int16_t width,
+                                int16_t height, const uint16_t* source,
+                                int16_t sourceStride) {
+  if (activePanel == nullptr || transferBuffer == nullptr || width <= 0 || height <= 0) {
+    return;
+  }
+  const int16_t rowsPerChunk = max<int16_t>(1, kTransferPixels / width);
+  activePanel->startWrite();
+  activePanel->setAddrWindow(x, y, width, height);
+  for (int16_t row = 0; row < height;) {
+    const int16_t chunkRows = min<int16_t>(rowsPerChunk, height - row);
+    for (int16_t chunkRow = 0; chunkRow < chunkRows; ++chunkRow) {
+      memcpy(transferBuffer + chunkRow * width,
+             source + (row + chunkRow) * sourceStride,
+             width * sizeof(uint16_t));
+    }
+    activePanel->writePixels(transferBuffer,
+                             static_cast<uint32_t>(chunkRows) * width,
+                             true, false);
+    row += chunkRows;
+  }
+  activePanel->endWrite();
 }

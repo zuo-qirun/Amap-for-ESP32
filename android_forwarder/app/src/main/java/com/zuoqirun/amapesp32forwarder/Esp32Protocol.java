@@ -26,9 +26,29 @@ final class Esp32Protocol {
         compact.guide.nextServiceAreaDistance = "";
         compact.guide.serviceAreaName = safe(compact.guide.serviceAreaName, 16);
         compact.guide.serviceAreaDistance = safe(compact.guide.serviceAreaDistance, 12);
+        compact.music.album = "";
+        compact.music.coverUrl = "";
+        compact.music.title = safe(compact.music.title, 32);
+        compact.music.artist = safe(compact.music.artist, 32);
+        compact.music.lyric = safe(compact.music.lyric, 64);
+        compact.music.highlightedLyric = safe(compact.music.highlightedLyric, 64);
+        compact.music.translatedLyric = "";
+        compact.music.nextLyric = safe(compact.music.nextLyric, 48);
         trimTmc(compact.tmc, 4);
         payload = toJson(compact, seq).getBytes(StandardCharsets.UTF_8);
         return payload;
+    }
+
+    static byte[] encodeMusicUpdate(Esp32NavState state, long seq) throws Exception {
+        JSONObject root = new JSONObject();
+        root.put("proto", 1);
+        root.put("type", "music_update");
+        root.put("seq", seq);
+        root.put("ts", System.currentTimeMillis());
+        root.put("active", state.active);
+        root.put("mode", safe(state.mode, 16));
+        root.put("music", musicJson(state.music));
+        return root.toString().getBytes(StandardCharsets.UTF_8);
     }
 
     static String toJson(Esp32NavState state, long seq) throws Exception {
@@ -133,9 +153,37 @@ final class Esp32Protocol {
         guide.put("nextServiceAreaName", safe(state.guide.nextServiceAreaName, 32));
         guide.put("nextServiceAreaDistance", safe(state.guide.nextServiceAreaDistance, 16));
         root.put("guide", guide);
+
+        root.put("music", musicJson(state.music));
         root.put("alert", safe(state.alert, 48));
         root.put("detail", safe(state.detail, 96));
         return root.toString();
+    }
+
+    private static JSONObject musicJson(Esp32NavState.Music music) throws Exception {
+        JSONObject json = new JSONObject();
+        json.put("active", music.active);
+        json.put("playing", music.playing);
+        json.put("source", safe(music.source, 16));
+        json.put("songId", music.songId);
+        json.put("title", safe(music.title, 48));
+        json.put("artist", safe(music.artist, 48));
+        json.put("album", safe(music.album, 48));
+        json.put("coverUrl", safe(music.coverUrl, 320));
+        json.put("positionMs", music.positionMs);
+        json.put("durationMs", music.durationMs);
+        json.put("previousLyric", safe(music.previousLyric, 80));
+        json.put("lyric", safe(music.lyric, 80));
+        json.put("translatedLyric", safe(music.translatedLyric, 80));
+        json.put("nextLyric", safe(music.nextLyric, 80));
+        json.put("highlightedLyric", safe(music.highlightedLyric, 80));
+        json.put("currentWord", safe(music.currentWord, 24));
+        json.put("lineStartMs", music.lineStartMs);
+        json.put("lineDurationMs", music.lineDurationMs);
+        json.put("wordStartMs", music.wordStartMs);
+        json.put("wordDurationMs", music.wordDurationMs);
+        json.put("wordProgressPermille", music.wordProgressPermille);
+        return json;
     }
 
     private static String safe(String value, int maxChars) {
@@ -143,10 +191,11 @@ final class Esp32Protocol {
             return "";
         }
         String s = value.trim();
-        if (s.length() <= maxChars) {
+        int codePoints = s.codePointCount(0, s.length());
+        if (codePoints <= maxChars) {
             return s;
         }
-        return s.substring(0, maxChars);
+        return s.substring(0, s.offsetByCodePoints(0, maxChars));
     }
 
     private static void trimTmc(Esp32NavState.Tmc tmc, int maxSegments) {

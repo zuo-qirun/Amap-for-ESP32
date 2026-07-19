@@ -14,6 +14,7 @@ private:
   void renderStandby(const String& message, bool wifiConnected, bool bleConnected,
                      const String& ip, uint16_t port);
   void renderNav(const NavState& state, unsigned long silenceMs);
+  void renderMusic(const MusicState& music);
   void setTextFont();
   void setSmallFont();
   void setLargeFont();
@@ -30,4 +31,5 @@ private:
   String guideText(const NavState& state) const;
   String roadInfoText(const NavState& state) const;
   String bottomText(const NavState& state) const;
+  String formatTime(int64_t milliseconds) const;
 };

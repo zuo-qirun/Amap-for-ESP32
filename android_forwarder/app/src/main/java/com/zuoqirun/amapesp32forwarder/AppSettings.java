@@ -14,10 +14,12 @@ final class AppSettings {
     private static final String KEY_IP = "esp32_ip";
     private static final String KEY_PORT = "udp_port";
     private static final String KEY_TARGET_PACKAGE = "target_package";
+    private static final String KEY_LYRIC_OFFSET_MS = "lyric_offset_ms";
     private static final String KEY_LAST_SENT = "last_sent";
     private static final String KEY_LAST_PAYLOAD = "last_payload";
     private static final String KEY_LAST_ERROR = "last_error";
     private static final String KEY_LAST_BROADCAST = "last_broadcast";
+    private static final String KEY_LAST_TRAFFIC_DIAGNOSTIC = "last_traffic_diagnostic";
 
     private AppSettings() {}
 
@@ -68,6 +70,15 @@ final class AppSettings {
                 .apply();
     }
 
+    static int getLyricOffsetMs(Context context) {
+        return prefs(context).getInt(KEY_LYRIC_OFFSET_MS, 0);
+    }
+
+    static void setLyricOffsetMs(Context context, int offsetMs) {
+        prefs(context).edit().putInt(KEY_LYRIC_OFFSET_MS,
+                Math.max(-5000, Math.min(5000, offsetMs))).apply();
+    }
+
     static String normalizeTargetPackage(String packageName) {
         if (packageName == null || packageName.trim().isEmpty()) {
             return DEFAULT_TARGET_PACKAGE;
@@ -81,6 +92,15 @@ final class AppSettings {
 
     static long getLastBroadcast(Context context) {
         return prefs(context).getLong(KEY_LAST_BROADCAST, 0L);
+    }
+
+    static void noteTrafficDiagnostic(Context context, String diagnostic) {
+        prefs(context).edit().putString(KEY_LAST_TRAFFIC_DIAGNOSTIC,
+                diagnostic == null ? "" : diagnostic).apply();
+    }
+
+    static String getLastTrafficDiagnostic(Context context) {
+        return prefs(context).getString(KEY_LAST_TRAFFIC_DIAGNOSTIC, "");
     }
 
     static void noteSent(Context context, int payloadBytes) {

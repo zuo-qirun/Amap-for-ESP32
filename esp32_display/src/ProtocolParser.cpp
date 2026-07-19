@@ -13,12 +13,48 @@ bool ProtocolParser::parse(const char* payload, size_t length, NavState& target,
   JsonObject root = doc.as<JsonObject>();
   int proto = root["proto"] | 0;
   const char* type = root["type"] | "";
-  if (proto != 1 || strcmp(type, "nav_state") != 0) {
+  const bool musicUpdate = strcmp(type, "music_update") == 0;
+  if (proto != 1 || (!musicUpdate && strcmp(type, "nav_state") != 0)) {
     error = "unsupported proto/type";
     return false;
   }
 
   target.seq = root["seq"] | target.seq;
+  if (musicUpdate) {
+    target.active = root["active"] | target.active;
+    target.mode = limitText(readText(root["mode"] | target.mode.c_str()), 16);
+    JsonObject music = root["music"].as<JsonObject>();
+    target.music.active = music["active"] | false;
+    target.music.playing = music["playing"] | false;
+    target.music.source = limitText(readText(music["source"] | ""), 16);
+    target.music.songId = music["songId"] | static_cast<int64_t>(-1);
+    target.music.title = limitText(readText(music["title"] | ""), 96);
+    target.music.artist = limitText(readText(music["artist"] | ""), 96);
+    target.music.album = limitText(readText(music["album"] | ""), 96);
+    target.music.coverUrl = limitText(readText(music["coverUrl"] | ""), 512);
+    target.music.positionMs = music["positionMs"] | static_cast<int64_t>(0);
+    target.music.durationMs = music["durationMs"] | static_cast<int64_t>(-1);
+    target.music.previousLyric =
+        limitText(readText(music["previousLyric"] | ""), 240);
+    target.music.lyric = limitText(readText(music["lyric"] | ""), 240);
+    target.music.translatedLyric =
+        limitText(readText(music["translatedLyric"] | ""), 240);
+    target.music.nextLyric = limitText(readText(music["nextLyric"] | ""), 240);
+    target.music.highlightedLyric =
+        limitText(readText(music["highlightedLyric"] | ""), 240);
+    target.music.currentWord =
+        limitText(readText(music["currentWord"] | ""), 72);
+    target.music.lineStartMs = music["lineStartMs"] | static_cast<int64_t>(-1);
+    target.music.lineDurationMs = music["lineDurationMs"] | static_cast<int64_t>(0);
+    target.music.wordStartMs = music["wordStartMs"] | static_cast<int64_t>(-1);
+    target.music.wordDurationMs = music["wordDurationMs"] | static_cast<int64_t>(0);
+    target.music.wordProgressPermille =
+        constrain(music["wordProgressPermille"] | 0, 0, 1000);
+    target.music.receivedAt = millis();
+    target.lastPacketAt = target.music.receivedAt;
+    error = "";
+    return true;
+  }
   target.active = root["active"] | false;
   target.mode = limitText(readText(root["mode"] | "standby"), 16);
   target.road = limitText(readText(root["road"] | ""), 48);
@@ -118,9 +154,38 @@ bool ProtocolParser::parse(const char* payload, size_t length, NavState& target,
   target.guide.nextServiceAreaName = limitText(readText(guide["nextServiceAreaName"] | ""), 48);
   target.guide.nextServiceAreaDistance =
       limitText(readText(guide["nextServiceAreaDistance"] | ""), 24);
+
+  JsonObject music = root["music"].as<JsonObject>();
+  target.music.active = music["active"] | false;
+  target.music.playing = music["playing"] | false;
+  target.music.source = limitText(readText(music["source"] | ""), 16);
+  target.music.songId = music["songId"] | static_cast<int64_t>(-1);
+  target.music.title = limitText(readText(music["title"] | ""), 96);
+  target.music.artist = limitText(readText(music["artist"] | ""), 96);
+  target.music.album = limitText(readText(music["album"] | ""), 96);
+  target.music.coverUrl = limitText(readText(music["coverUrl"] | ""), 512);
+  target.music.positionMs = music["positionMs"] | static_cast<int64_t>(0);
+  target.music.durationMs = music["durationMs"] | static_cast<int64_t>(-1);
+  target.music.previousLyric =
+      limitText(readText(music["previousLyric"] | ""), 240);
+  target.music.lyric = limitText(readText(music["lyric"] | ""), 240);
+  target.music.translatedLyric =
+      limitText(readText(music["translatedLyric"] | ""), 240);
+  target.music.nextLyric = limitText(readText(music["nextLyric"] | ""), 240);
+  target.music.highlightedLyric =
+      limitText(readText(music["highlightedLyric"] | ""), 240);
+  target.music.currentWord =
+      limitText(readText(music["currentWord"] | ""), 72);
+  target.music.lineStartMs = music["lineStartMs"] | static_cast<int64_t>(-1);
+  target.music.lineDurationMs = music["lineDurationMs"] | static_cast<int64_t>(0);
+  target.music.wordStartMs = music["wordStartMs"] | static_cast<int64_t>(-1);
+  target.music.wordDurationMs = music["wordDurationMs"] | static_cast<int64_t>(0);
+  target.music.wordProgressPermille =
+      constrain(music["wordProgressPermille"] | 0, 0, 1000);
   target.alert = limitText(readText(root["alert"] | ""), 72);
   target.detail = limitText(readText(root["detail"] | ""), 120);
-  target.lastPacketAt = millis();
+  target.music.receivedAt = millis();
+  target.lastPacketAt = target.music.receivedAt;
   error = "";
   return true;
 }
@@ -136,9 +201,19 @@ String ProtocolParser::limitText(const String& value, size_t maxBytes) {
   if (value.length() <= maxBytes) {
     return value;
   }
-  String out = value.substring(0, maxBytes);
-  while (out.length() > 0 && (static_cast<uint8_t>(out[out.length() - 1]) & 0xC0) == 0x80) {
-    out.remove(out.length() - 1);
+  size_t end = 0;
+  while (end < value.length()) {
+    const uint8_t first = static_cast<uint8_t>(value[end]);
+    size_t bytes = 1;
+    if ((first & 0xE0) == 0xC0) bytes = 2;
+    else if ((first & 0xF0) == 0xE0) bytes = 3;
+    else if ((first & 0xF8) == 0xF0) bytes = 4;
+    if (end + bytes > maxBytes || end + bytes > value.length()) break;
+    bool valid = bytes == 1 || (first & 0xC0) != 0x80;
+    for (size_t index = 1; index < bytes && valid; ++index) {
+      valid = (static_cast<uint8_t>(value[end + index]) & 0xC0) == 0x80;
+    }
+    end += valid ? bytes : 1;
   }
-  return out;
+  return value.substring(0, end);
 }

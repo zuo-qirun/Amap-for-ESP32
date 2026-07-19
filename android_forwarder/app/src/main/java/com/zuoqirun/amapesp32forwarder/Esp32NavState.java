@@ -19,6 +19,7 @@ final class Esp32NavState {
     final Route route = new Route();
     final RoadInfo roadInfo = new RoadInfo();
     final GuideInfo guide = new GuideInfo();
+    final Music music = new Music();
     String alert = "";
     String detail = "";
     long updatedAt = System.currentTimeMillis();
@@ -69,6 +70,7 @@ final class Esp32NavState {
         out.guide.serviceAreaDistance = guide.serviceAreaDistance;
         out.guide.nextServiceAreaName = guide.nextServiceAreaName;
         out.guide.nextServiceAreaDistance = guide.nextServiceAreaDistance;
+        out.music.copyFrom(music);
         out.alert = alert;
         out.detail = detail;
         out.updatedAt = updatedAt;
@@ -100,6 +102,15 @@ final class Esp32NavState {
         sb.append('|').append(guide.exitName).append('|').append(guide.exitDirection).append('|')
                 .append(guide.serviceAreaName).append('|').append(guide.serviceAreaDistance).append('|')
                 .append(guide.nextServiceAreaName).append('|').append(guide.nextServiceAreaDistance);
+        sb.append('|').append(music.active).append('|').append(music.playing).append('|')
+                .append(music.songId).append('|').append(music.title).append('|').append(music.artist)
+                .append('|').append(music.positionMs).append('|').append(music.durationMs).append('|')
+                .append(music.lyric).append('|').append(music.translatedLyric).append('|')
+                .append(music.nextLyric).append('|').append(music.highlightedLyric).append('|')
+                .append(music.currentWord).append('|').append(music.wordStartMs).append('|')
+                .append(music.wordDurationMs).append('|').append(music.lineStartMs).append('|')
+                .append(music.lineDurationMs).append('|')
+                .append(music.wordProgressPermille);
         sb.append('|').append(alert).append('|').append(detail);
         return sb.toString();
     }
@@ -151,6 +162,19 @@ final class Esp32NavState {
         state.guide.serviceAreaName = "清河服务区";
         state.guide.serviceAreaDistance = "8.6公里";
         state.alert = "前方测速摄像头";
+        state.music.active = true;
+        state.music.playing = true;
+        state.music.source = "netease";
+        state.music.songId = 186016L;
+        state.music.title = "晴天";
+        state.music.artist = "周杰伦";
+        state.music.album = "叶惠美";
+        state.music.positionMs = 56_410L;
+        state.music.durationMs = 269_000L;
+        state.music.lyric = "为你翘课的那一天";
+        state.music.highlightedLyric = "为你翘课";
+        state.music.wordProgressPermille = 500;
+        state.music.nextLyric = "花落的那一天";
         return state;
     }
 
@@ -253,5 +277,53 @@ final class Esp32NavState {
         String serviceAreaDistance = "";
         String nextServiceAreaName = "";
         String nextServiceAreaDistance = "";
+    }
+
+    static final class Music {
+        boolean active;
+        boolean playing;
+        String source = "netease";
+        long songId = -1L;
+        String title = "";
+        String artist = "";
+        String album = "";
+        String coverUrl = "";
+        long positionMs;
+        long durationMs = -1L;
+        String previousLyric = "";
+        String lyric = "";
+        String translatedLyric = "";
+        String nextLyric = "";
+        String highlightedLyric = "";
+        String currentWord = "";
+        long lineStartMs = -1L;
+        long lineDurationMs;
+        long wordStartMs = -1L;
+        long wordDurationMs;
+        int wordProgressPermille;
+
+        void copyFrom(Music value) {
+            active = value.active;
+            playing = value.playing;
+            source = value.source;
+            songId = value.songId;
+            title = value.title;
+            artist = value.artist;
+            album = value.album;
+            coverUrl = value.coverUrl;
+            positionMs = value.positionMs;
+            durationMs = value.durationMs;
+            previousLyric = value.previousLyric;
+            lyric = value.lyric;
+            translatedLyric = value.translatedLyric;
+            nextLyric = value.nextLyric;
+            highlightedLyric = value.highlightedLyric;
+            currentWord = value.currentWord;
+            lineStartMs = value.lineStartMs;
+            lineDurationMs = value.lineDurationMs;
+            wordStartMs = value.wordStartMs;
+            wordDurationMs = value.wordDurationMs;
+            wordProgressPermille = value.wordProgressPermille;
+        }
     }
 }

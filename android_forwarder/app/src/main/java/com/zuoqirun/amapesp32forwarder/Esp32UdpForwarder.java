@@ -28,6 +28,14 @@ final class Esp32UdpForwarder {
     }
 
     void send(Esp32NavState state, boolean force) {
+        send(state, force, false);
+    }
+
+    void sendMusicUpdate(Esp32NavState state) {
+        send(state, true, true);
+    }
+
+    private void send(Esp32NavState state, boolean force, boolean musicOnly) {
         if (!AppSettings.isEnabled(appContext)) {
             return;
         }
@@ -48,7 +56,7 @@ final class Esp32UdpForwarder {
         Esp32NavState snapshot = state.copy();
         executor.execute(() -> {
             try {
-                doSend(snapshot);
+                doSend(snapshot, musicOnly);
             } finally {
                 sendPending.set(false);
             }
@@ -67,11 +75,13 @@ final class Esp32UdpForwarder {
         executor.shutdownNow();
     }
 
-    private void doSend(Esp32NavState snapshot) {
+    private void doSend(Esp32NavState snapshot, boolean musicOnly) {
         try {
             Esp32Transport target = ensureTransport();
             long packetSeq = seq.getAndIncrement();
-            byte[] payload = Esp32Protocol.encode(snapshot, packetSeq);
+            byte[] payload = musicOnly
+                    ? Esp32Protocol.encodeMusicUpdate(snapshot, packetSeq)
+                    : Esp32Protocol.encode(snapshot, packetSeq);
             target.send(payload);
             if (BuildConfig.DEBUG) {
                 Log.d(TAG, AppSettings.getTransport(appContext).toUpperCase()

@@ -33,8 +33,8 @@ public final class ForwarderService extends Service implements AMapBroadcastRece
         @Override
         public void run() {
             if (AppSettings.isEnabled(ForwarderService.this)) {
-                forwarder.send(aggregator.snapshot(), true);
-                handler.postDelayed(this, 1000L);
+                forwarder.sendMusicUpdate(withMusic(aggregator.snapshot()));
+                handler.postDelayed(this, MusicStateStore.isActive() ? 200L : 1000L);
             }
         }
     };
@@ -60,6 +60,7 @@ public final class ForwarderService extends Service implements AMapBroadcastRece
         super.onCreate();
         aggregator = new AMapStateAggregator();
         forwarder = new Esp32UdpForwarder(this);
+        MusicStateStore.initialize(this);
         startForeground(NOTIFICATION_ID, buildNotification());
         acquireBackgroundLocks();
         registerAmapReceiver();
@@ -113,9 +114,10 @@ public final class ForwarderService extends Service implements AMapBroadcastRece
     public void onAmapBroadcast(Intent intent) {
         AppSettings.noteBroadcast(this);
         String action = intent == null ? "" : intent.getAction();
-        if (BuildConfig.DEBUG && intent != null && (action != null
+        boolean trafficInput = intent != null && (action != null
                 && action.toLowerCase().contains("traffic_light")
-                || TrafficLightParser.hasTrafficLightPayload(intent.getExtras()))) {
+                || TrafficLightParser.hasTrafficLightPayload(intent.getExtras()));
+        if (trafficInput) {
             Bundle extras = intent.getExtras();
             Log.d(TAG, "Traffic input action=" + action
                     + " KEY_TYPE=" + BundleReaders.intValue(extras, -1, "KEY_TYPE", "keyType")
@@ -123,7 +125,17 @@ public final class ForwarderService extends Service implements AMapBroadcastRece
         }
         boolean forceClear = intent != null && TrafficLightParser.isClearPayload(intent.getExtras());
         Esp32NavState snapshot = aggregator.handleIntent(intent);
-        forwarder.send(snapshot, forceClear);
+        if (trafficInput) {
+            AppSettings.noteTrafficDiagnostic(this, "action=" + action
+                    + " lights=" + snapshot.lights.size()
+                    + " extras=" + TrafficLightParser.describeExtras(intent.getExtras()));
+        }
+        forwarder.send(withMusic(snapshot), forceClear);
+    }
+
+    private Esp32NavState withMusic(Esp32NavState snapshot) {
+        MusicStateStore.copyInto(snapshot.music);
+        return snapshot;
     }
 
     private void registerAmapReceiver() {

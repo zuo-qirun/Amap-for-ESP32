@@ -21,15 +21,28 @@
 
     <queries>
         <package android:name="com.autonavi.amapauto" />
+        <package android:name="com.netease.cloudmusic" />
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="android.bluetooth.adapter.action.REQUEST_ENABLE" />
+        </intent>
+        <intent>
+            <action android:name="android.settings.BLUETOOTH_SETTINGS" />
+        </intent>
+        <intent>
+            <action android:name="android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+            <data android:scheme="package" />
         </intent>
     </queries>
 
     <application
         android:allowBackup="true"
+        android:icon="@drawable/ic_launcher"
         android:label="@string/app_name"
+        android:roundIcon="@drawable/ic_launcher"
         android:supportsRtl="true"
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="true">
@@ -42,9 +55,23 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".Esp32SettingsActivity"
+            android:exported="false" />
+
         <service
             android:name=".ForwarderService"
             android:exported="false"
             android:foregroundServiceType="dataSync|connectedDevice" />
+
+        <service
+            android:name=".MusicNotificationListener"
+            android:exported="true"
+            android:label="网易云音乐状态读取"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

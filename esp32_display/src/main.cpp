@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "Config.h"
 #include "BleReceiver.h"
+#include "CapacitiveTouch.h"
 #include "TftRenderer.h"
 #include "NavState.h"
 #include "NetworkManager.h"
@@ -12,6 +13,7 @@ BleReceiver ble;
 OtaManager ota;
 ProtocolParser parser;
 TftRenderer display;
+CapacitiveTouch touch;
 NavState navState;
 
 char packetBuffer[AMAP_PACKET_BUFFER_SIZE];
@@ -19,6 +21,7 @@ unsigned long lastRenderAt = 0;
 unsigned long lastStatusLogAt = 0;
 String lastStatusText;
 bool displayReady = false;
+uint8_t lastTouchCount = 0;
 
 void setup() {
   Serial.begin(115200);
@@ -29,6 +32,7 @@ void setup() {
   navState.reset();
   display.begin();
   displayReady = display.isReady();
+  touch.begin();
   // Initialise the Bluetooth controller before Wi-Fi. On ESP32-S3 the radio
   // coexistence layer must be established by NimBLE before Wi-Fi enters
   // AP/STA mode, otherwise some Arduino core builds abort in coex_enable().
@@ -39,6 +43,17 @@ void setup() {
 
 void loop() {
   network.update();
+  touch.update();
+  const uint8_t touchCount = touch.touchCount();
+  if (touchCount != lastTouchCount) {
+    lastTouchCount = touchCount;
+    if (touchCount > 0) {
+      const CapacitiveTouchPoint point = touch.point();
+      Serial.printf("touch down: count=%u x=%d y=%d\n", touchCount, point.x, point.y);
+    } else {
+      Serial.println("touch up");
+    }
+  }
   // Do not start a background manifest request while the same flash update
   // partition is being written by a browser upload.
   if (!network.isManualFirmwareUpdatePending()) {
@@ -85,7 +100,7 @@ void loop() {
   }
 
   unsigned long now = millis();
-  if (now - lastRenderAt >= 150UL) {
+  if (now - lastRenderAt >= 33UL) {
     lastRenderAt = now;
     unsigned long silenceMs = navState.lastPacketAt == 0 ? ULONG_MAX : now - navState.lastPacketAt;
     display.render(navState, network.isConnected(), ble.isConnected(), network.ipString(),

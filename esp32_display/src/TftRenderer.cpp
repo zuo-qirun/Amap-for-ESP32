@@ -17,6 +17,7 @@ Adafruit_ST7789 st7789(AMAP_TFT_CS_PIN, AMAP_TFT_DC_PIN, AMAP_TFT_RST_PIN);
 Adafruit_ILI9341 ili9341(AMAP_TFT_CS_PIN, AMAP_TFT_DC_PIN, AMAP_TFT_RST_PIN);
 Adafruit_SPITFT* activePanel = nullptr;
 U8G2_FOR_ADAFRUIT_GFX tftFont;
+U8G2_FOR_ADAFRUIT_GFX adjacentFont;
 
 constexpr size_t kPixels = AMAP_TFT_WIDTH * AMAP_TFT_HEIGHT;
 constexpr size_t kPixelBytes = kPixels * sizeof(uint16_t);
@@ -93,8 +94,13 @@ void hashMusic(uint32_t& hash, const MusicState& music, bool includePosition,
 
 uint32_t frameSignature(const NavState& state, bool wifiConnected, bool bleConnected,
                          const String& ip, uint16_t port, unsigned long silenceMs,
-                         unsigned long now) {
+                         unsigned long now, TftViewMode viewMode,
+                         int16_t dragOffsetX, bool showGestureHint) {
   uint32_t hash = 2166136261UL;
+  const uint8_t view = static_cast<uint8_t>(viewMode);
+  hashValue(hash, view);
+  hashValue(hash, dragOffsetX);
+  hashValue(hash, showGestureHint);
   const bool connected = wifiConnected || bleConnected;
   const uint8_t screenState = !connected ? 0
                               : silenceMs > AMAP_STANDBY_MS ? 1
@@ -230,13 +236,13 @@ void TftRenderer::begin() {
     ili9341.begin(AMAP_TFT_SPI_FREQUENCY);
     ili9341.setRotation(AMAP_TFT_ROTATION);
     ili9341.setSPISpeed(AMAP_TFT_SPI_FREQUENCY);
-    ili9341.invertDisplay(AMAP_TFT_INVERT_COLORS != 0);
+    ili9341.invertDisplay(hardware.invertColors);
     activePanel = &ili9341;
   } else {
     st7789.init(AMAP_TFT_NATIVE_WIDTH, AMAP_TFT_NATIVE_HEIGHT, SPI_MODE0);
     st7789.setRotation(AMAP_TFT_ROTATION);
     st7789.setSPISpeed(AMAP_TFT_SPI_FREQUENCY);
-    st7789.invertDisplay(AMAP_TFT_INVERT_COLORS != 0);
+    st7789.invertDisplay(hardware.invertColors);
     activePanel = &st7789;
   }
   transferBuffer = static_cast<uint16_t*>(heap_caps_malloc(
@@ -244,7 +250,8 @@ void TftRenderer::begin() {
   if (transferBuffer == nullptr) {
     transferBuffer = static_cast<uint16_t*>(malloc(kTransferBytes));
   }
-  if (!canvas.begin() || !previousFrame.begin() || transferBuffer == nullptr) {
+  if (!canvas.begin() || !previousFrame.begin() || !adjacentFrame.begin() ||
+      transferBuffer == nullptr) {
     Serial.println("TFT disabled: unable to allocate frame buffers");
     return;
   }
@@ -252,13 +259,17 @@ void TftRenderer::begin() {
   tftFont.begin(canvas);
   tftFont.setFontMode(1);
   tftFont.setFont(u8g2_font_wqy12_t_gb2312);
+  adjacentFont.begin(adjacentFrame);
+  adjacentFont.setFontMode(1);
+  adjacentFont.setFont(u8g2_font_wqy12_t_gb2312);
   digitalWrite(AMAP_TFT_BL_PIN, HIGH);
   ready = true;
   const size_t psramTotal = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
   const size_t psramFree = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   const size_t psramLargest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
-  Serial.printf("%s ready: %dx%d, 3-frame buffered, PSRAM=%u/%u free, largest=%u, SPI SCK=%d MOSI=%d MISO=%d CS=%d\n",
+  Serial.printf("%s ready: %dx%d, inversion=%s, 3-frame buffered, PSRAM=%u/%u free, largest=%u, SPI SCK=%d MOSI=%d MISO=%d CS=%d\n",
                 hardware.tftDriverName(), activePanel->width(), activePanel->height(),
+                hardware.invertColors ? "on" : "off",
                 static_cast<unsigned>(psramFree), static_cast<unsigned>(psramTotal),
                 static_cast<unsigned>(psramLargest),
                 AMAP_TFT_SCLK_PIN, AMAP_TFT_MOSI_PIN,
@@ -269,6 +280,188 @@ bool TftRenderer::isReady() const {
   return ready;
 }
 
+void TftRenderer::updateTouch(uint8_t touchCount, int16_t x, int16_t y) {
+  if (!ready) {
+    return;
+  }
+  const unsigned long now = millis();
+  if (touchCount > 1) {
+    if (touching) {
+      endTouch(now);
+    }
+    return;
+  }
+  if (touchCount > 0) {
+    if (!touching) {
+      beginTouch(x, y, now);
+    } else {
+      moveTouch(x, y, now);
+    }
+  } else if (touching) {
+    endTouch(now);
+  }
+}
+
+const char* TftRenderer::currentViewName() const {
+  switch (viewMode) {
+    case TftViewMode::Navigation: return "navigation";
+    case TftViewMode::Music: return "music";
+    case TftViewMode::Status: return "status";
+    default: return "auto";
+  }
+}
+
+void TftRenderer::beginTouch(int16_t x, int16_t y, unsigned long now) {
+  touching = true;
+  directionLocked = false;
+  horizontalGesture = false;
+  springActive = false;
+  touchStartX = x;
+  touchStartY = y;
+  touchBaseOffset = dragOffsetX;
+  lastSampleX = x;
+  lastSampleY = y;
+  releaseVelocityX = 0.0f;
+  touchStartedAt = now;
+  lastSampleAt = now;
+  gestureHintUntil = now + 650UL;
+}
+
+void TftRenderer::moveTouch(int16_t x, int16_t y, unsigned long now) {
+  const int16_t deltaX = x - touchStartX;
+  const int16_t deltaY = y - touchStartY;
+  if (!directionLocked && (abs(deltaX) >= 10 || abs(deltaY) >= 10)) {
+    directionLocked = true;
+    horizontalGesture = abs(deltaX) > abs(deltaY);
+  }
+  const unsigned long elapsed = now - lastSampleAt;
+  if (elapsed > 0 && x != lastSampleX) {
+    const float sampleVelocity = static_cast<float>(x - lastSampleX) * 1000.0f / elapsed;
+    releaseVelocityX = releaseVelocityX * 0.55f + sampleVelocity * 0.45f;
+  }
+  if (directionLocked && horizontalGesture) {
+    dragOffsetX = constrain(touchBaseOffset + deltaX,
+                            -AMAP_TFT_WIDTH + 1, AMAP_TFT_WIDTH - 1);
+    gestureHintUntil = now + 350UL;
+  }
+  lastSampleX = x;
+  lastSampleY = y;
+  lastSampleAt = now;
+}
+
+void TftRenderer::endTouch(unsigned long now) {
+  const int16_t deltaY = lastSampleY - touchStartY;
+  const unsigned long duration = now - touchStartedAt;
+  touching = false;
+  if (directionLocked && horizontalGesture) {
+    const float projected = dragOffsetX + releaseVelocityX * 0.12f;
+    const bool commit = abs(projected) >= 64;
+    springTarget = commit ? (projected < 0 ? -AMAP_TFT_WIDTH : AMAP_TFT_WIDTH) : 0;
+    springVelocity = releaseVelocityX;
+    springActive = true;
+    lastSpringAt = now;
+  } else if (directionLocked && abs(deltaY) >= 42) {
+    dragOffsetX = 0;
+    switchView(deltaY < 0 ? TftViewMode::Status : TftViewMode::Auto, now);
+  } else if (duration >= 650UL) {
+    dragOffsetX = 0;
+    switchView(TftViewMode::Auto, now);
+  } else if (dragOffsetX != 0) {
+    springTarget = abs(dragOffsetX) >= AMAP_TFT_WIDTH / 2
+                       ? (dragOffsetX < 0 ? -AMAP_TFT_WIDTH : AMAP_TFT_WIDTH)
+                       : 0;
+    springVelocity = 0.0f;
+    springActive = true;
+    lastSpringAt = now;
+  } else {
+    gestureHintUntil = now + 1200UL;
+  }
+}
+
+void TftRenderer::advanceSpring(unsigned long now) {
+  if (!springActive || touching) {
+    return;
+  }
+  const unsigned long elapsedMs = min<unsigned long>(now - lastSpringAt, 34UL);
+  if (elapsedMs == 0) {
+    return;
+  }
+  lastSpringAt = now;
+  const float dt = elapsedMs / 1000.0f;
+  const float position = dragOffsetX;
+  constexpr float omega = 19.0f;
+  const float acceleration = omega * omega * (springTarget - position) -
+                             2.0f * omega * springVelocity;
+  springVelocity += acceleration * dt;
+  float next = position + springVelocity * dt;
+  if ((springTarget > 0 && next > springTarget) ||
+      (springTarget < 0 && next < springTarget)) {
+    next = springTarget;
+    springVelocity = 0.0f;
+  }
+  dragOffsetX = static_cast<int16_t>(roundf(next));
+  if (abs(springTarget - dragOffsetX) <= 1 && abs(springVelocity) < 12.0f) {
+    dragOffsetX = springTarget;
+    if (springTarget == 0) {
+      springActive = false;
+      springVelocity = 0.0f;
+      gestureHintUntil = now + 700UL;
+    } else {
+      finishHorizontalTransition();
+    }
+  }
+}
+
+void TftRenderer::switchView(TftViewMode mode, unsigned long now) {
+  viewMode = mode;
+  springActive = false;
+  springVelocity = 0.0f;
+  springTarget = 0;
+  gestureHintUntil = now + 1200UL;
+  Serial.printf("touch view: %s\n", currentViewName());
+}
+
+void TftRenderer::finishHorizontalTransition() {
+  const int direction = springTarget < 0 ? 1 : -1;
+  viewMode = adjacentView(direction);
+  dragOffsetX = 0;
+  springTarget = 0;
+  springVelocity = 0.0f;
+  springActive = false;
+  gestureHintUntil = millis() + 1000UL;
+  Serial.printf("touch view: %s\n", currentViewName());
+}
+
+TftViewMode TftRenderer::adjacentView(int direction) const {
+  const int count = 4;
+  const int current = static_cast<int>(viewMode);
+  return static_cast<TftViewMode>((current + direction + count) % count);
+}
+
+void TftRenderer::compositeHorizontalSlide(int16_t offset) {
+  if (offset == 0) {
+    return;
+  }
+  const int16_t shift = min<int16_t>(abs(offset), AMAP_TFT_WIDTH - 1);
+  uint16_t* current = canvas.pixels();
+  const uint16_t* adjacent = adjacentFrame.pixels();
+  for (int16_t row = 0; row < AMAP_TFT_HEIGHT; ++row) {
+    uint16_t* currentRow = current + row * AMAP_TFT_WIDTH;
+    const uint16_t* adjacentRow = adjacent + row * AMAP_TFT_WIDTH;
+    if (offset < 0) {
+      memmove(currentRow, currentRow + shift,
+              (AMAP_TFT_WIDTH - shift) * sizeof(uint16_t));
+      memcpy(currentRow + AMAP_TFT_WIDTH - shift, adjacentRow,
+             shift * sizeof(uint16_t));
+    } else {
+      memmove(currentRow + shift, currentRow,
+              (AMAP_TFT_WIDTH - shift) * sizeof(uint16_t));
+      memcpy(currentRow, adjacentRow + AMAP_TFT_WIDTH - shift,
+             shift * sizeof(uint16_t));
+    }
+  }
+}
+
 void TftRenderer::render(const NavState& state, bool wifiConnected, bool bleConnected,
                          const String& ip, uint16_t port, unsigned long silenceMs) {
   if (!ready) {
@@ -276,15 +469,28 @@ void TftRenderer::render(const NavState& state, bool wifiConnected, bool bleConn
   }
   const bool connected = wifiConnected || bleConnected;
   const unsigned long now = millis();
+  advanceSpring(now);
+  const bool showGestureHint = touching || springActive ||
+                               static_cast<long>(gestureHintUntil - now) > 0;
   const uint32_t signature =
-      frameSignature(state, wifiConnected, bleConnected, ip, port, silenceMs, now);
+      frameSignature(state, wifiConnected, bleConnected, ip, port, silenceMs, now,
+                     viewMode, dragOffsetX, showGestureHint);
   if (frameDrawn && signature == lastFrameSignature) {
     return;
   }
 
   const uint32_t frameStartedAt = micros();
   TftFrameRenderer::render(canvas, tftFont, state, wifiConnected, bleConnected, ip, port,
-                           silenceMs);
+                           silenceMs, viewMode);
+  if (dragOffsetX != 0) {
+    const int direction = dragOffsetX < 0 ? 1 : -1;
+    TftFrameRenderer::render(adjacentFrame, adjacentFont, state, wifiConnected, bleConnected,
+                             ip, port, silenceMs, adjacentView(direction));
+    compositeHorizontalSlide(dragOffsetX);
+  }
+  if (showGestureHint) {
+    TftFrameRenderer::drawGestureHint(canvas, tftFont, viewMode);
+  }
   const uint32_t composedAt = micros();
   uint16_t* current = canvas.pixels();
   uint16_t* previous = previousFrame.pixels();

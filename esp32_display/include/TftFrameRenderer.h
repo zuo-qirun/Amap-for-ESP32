@@ -5,6 +5,7 @@
 #include <U8g2_for_Adafruit_GFX.h>
 
 #include "NavState.h"
+#include "TftViewMode.h"
 
 // Draws the logical 320x240 frame onto any Adafruit_GFX-compatible target.
 // The hardware display and browser preview deliberately share this renderer.
@@ -12,7 +13,10 @@ class TftFrameRenderer {
 public:
   static void render(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                      const NavState& state, bool wifiConnected, bool bleConnected,
-                     const String& ip, uint16_t port, unsigned long silenceMs);
+                     const String& ip, uint16_t port, unsigned long silenceMs,
+                     TftViewMode viewMode = TftViewMode::Auto);
+  static void drawGestureHint(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
+                              TftViewMode viewMode);
 
 private:
   static void renderStandby(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,

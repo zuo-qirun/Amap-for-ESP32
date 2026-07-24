@@ -249,9 +249,37 @@ void drawAlphaBitmap(Adafruit_GFX& display, const NaviLinkIcons::Bitmap& bitmap,
 
 void TftFrameRenderer::render(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                               const NavState& state, bool wifiConnected, bool bleConnected,
-                              const String& ip, uint16_t port, unsigned long silenceMs) {
+                              const String& ip, uint16_t port, unsigned long silenceMs,
+                              TftViewMode viewMode) {
   if (state.music.active) {
     AlbumArtCache::instance().request(state.music.coverUrl, wifiConnected);
+  }
+  const bool connected = wifiConnected || bleConnected;
+  const bool fresh = connected && silenceMs <= AMAP_STANDBY_MS;
+  if (viewMode == TftViewMode::Status) {
+    renderStandby(display, font, "设备状态", "左右滑切换 · 下滑返回自动",
+                  wifiConnected, bleConnected, ip, port);
+    return;
+  }
+  if (viewMode == TftViewMode::Navigation) {
+    if (!fresh || !state.active) {
+      renderStandby(display, font, "暂无导航数据", "左右滑动可切换界面",
+                    wifiConnected, bleConnected, ip, port);
+    } else if (state.mode == "cruise") {
+      renderCruise(display, font, state);
+    } else {
+      renderNavigation(display, font, state);
+    }
+    return;
+  }
+  if (viewMode == TftViewMode::Music) {
+    if (!fresh || !state.music.active) {
+      renderStandby(display, font, "暂无音乐数据", "打开网易云音乐后自动更新",
+                    wifiConnected, bleConnected, ip, port);
+    } else {
+      renderMusic(display, font, state.music);
+    }
+    return;
   }
   if (!wifiConnected && !bleConnected) {
     renderStandby(display, font, "设备配网模式", "连接设备热点后打开配置页面",
@@ -278,6 +306,30 @@ void TftFrameRenderer::render(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font
       drawMusicOverlay(display, font, state.music);
     }
   }
+}
+
+void TftFrameRenderer::drawGestureHint(Adafruit_GFX& display,
+                                       U8G2_FOR_ADAFRUIT_GFX& font,
+                                       TftViewMode viewMode) {
+  const char* label = "自动";
+  if (viewMode == TftViewMode::Navigation) {
+    label = "导航";
+  } else if (viewMode == TftViewMode::Music) {
+    label = "音乐";
+  } else if (viewMode == TftViewMode::Status) {
+    label = "状态";
+  }
+  constexpr int16_t left = 112;
+  constexpr int16_t top = 215;
+  constexpr int16_t width = 96;
+  display.fillRoundRect(left, top, width, 21, 10, kInfoSurface);
+  display.drawRoundRect(left, top, width, 21, 10, kCapsuleStroke);
+  for (uint8_t index = 0; index < 4; ++index) {
+    const bool selected = static_cast<uint8_t>(viewMode) == index;
+    display.fillCircle(left + 12 + index * 8, top + 10, selected ? 3 : 2,
+                       selected ? kAccent : kMuted);
+  }
+  drawUtf8(font, left + 49, top + 15, label, kTextSoft);
 }
 
 void TftFrameRenderer::renderMusic(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,

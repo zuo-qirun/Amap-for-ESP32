@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothManager;
 import android.content.res.ColorStateList;
+import android.content.res.Configuration;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -15,6 +16,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.provider.Settings;
 import android.text.InputType;
 import android.text.TextUtils;
@@ -77,11 +79,21 @@ public final class MainActivity extends Activity {
     private TextView musicStatusText;
     private TextView errorText;
     private TextView networkHintText;
+    private TextView serviceStatusText;
     private boolean loadingSettings;
     private boolean blePermissionRequestInFlight;
     private boolean notificationPermissionRequestInFlight;
     private boolean batteryRequestAttempted;
     private boolean pendingTestFrame;
+    private int colorBackground;
+    private int colorSurface;
+    private int colorRaised;
+    private int colorText;
+    private int colorSecondary;
+    private int colorSeparator;
+    private int colorAccent;
+    private int colorGreen;
+    private int colorRed;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -129,56 +141,78 @@ public final class MainActivity extends Activity {
     }
 
     private void buildUi() {
+        resolvePalette();
+        getWindow().setStatusBarColor(colorBackground);
+        getWindow().setNavigationBarColor(colorBackground);
+        if (!isDarkTheme() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
+        }
+
         ScrollView scrollView = new ScrollView(this);
+        scrollView.setFillViewport(true);
+        scrollView.setBackgroundColor(colorBackground);
+        scrollView.setClipToPadding(false);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(14), dp(14), dp(14), dp(28));
-        root.setBackgroundColor(0xFFFAFBFC);
+        root.setPadding(dp(16), dp(22), dp(16), dp(40));
+        root.setBackgroundColor(colorBackground);
         scrollView.addView(root, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         LinearLayout hero = new LinearLayout(this);
         hero.setOrientation(LinearLayout.VERTICAL);
-        hero.setPadding(dp(4), dp(10), dp(4), dp(16));
-        TextView eyebrow = text("NAV  •  MUSIC  •  ESP32", 12, true);
-        eyebrow.setTextColor(0xFF0F766E);
+        hero.setPadding(dp(4), dp(6), dp(4), dp(18));
+        TextView eyebrow = text("AMAP  ·  ESP32", 12, true);
+        eyebrow.setTextColor(colorAccent);
+        eyebrow.setLetterSpacing(0.08f);
         hero.addView(eyebrow);
-        TextView title = text("行途 · ESP32", 27, true);
-        title.setTextColor(0xFF0B1726);
-        title.setPadding(0, dp(7), 0, dp(5));
+        TextView title = text("行途", 34, true);
+        title.setTextColor(colorText);
+        title.setLetterSpacing(-0.025f);
+        title.setPadding(0, dp(7), 0, dp(4));
         hero.addView(title);
-        TextView subtitle = text("把高德导航与网易云逐字歌词送到车载屏幕", 14, false);
-        subtitle.setTextColor(0xFF64748B);
+        TextView subtitle = text("让导航与音乐，自然抵达车载屏幕。", 15, false);
+        subtitle.setTextColor(colorSecondary);
         hero.addView(subtitle);
         root.addView(hero, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
+        LinearLayout serviceCard = card(root);
+        LinearLayout serviceRow = new LinearLayout(this);
+        serviceRow.setOrientation(LinearLayout.HORIZONTAL);
+        serviceRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout serviceCopy = new LinearLayout(this);
+        serviceCopy.setOrientation(LinearLayout.VERTICAL);
+        TextView serviceTitle = text("转发服务", 18, true);
+        serviceCopy.addView(serviceTitle);
+        serviceStatusText = text("正在读取状态…", 13, false);
+        serviceStatusText.setTextColor(colorSecondary);
+        serviceStatusText.setPadding(0, dp(4), dp(8), 0);
+        serviceCopy.addView(serviceStatusText);
+        serviceRow.addView(serviceCopy, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         enableSwitch = new Switch(this);
-        enableSwitch.setText("启用转发服务");
-        enableSwitch.setTextSize(18);
-        enableSwitch.setTextColor(0xFF0B1726);
+        enableSwitch.setContentDescription("启用转发服务");
         int[][] switchStates = new int[][]{
                 new int[]{android.R.attr.state_checked}, new int[]{}
         };
         enableSwitch.setThumbTintList(new ColorStateList(switchStates,
-                new int[]{0xFF19C3B1, 0xFF94A3B8}));
+                new int[]{colorGreen, isDarkTheme() ? 0xFF8E8E93 : 0xFFFFFFFF}));
         enableSwitch.setTrackTintList(new ColorStateList(switchStates,
-                new int[]{0x6619C3B1, 0x335E7184}));
-        enableSwitch.setPadding(dp(16), dp(12), dp(16), dp(12));
-        LinearLayout.LayoutParams switchParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        switchParams.setMargins(0, dp(12), 0, dp(6));
-        root.addView(enableSwitch, switchParams);
+                new int[]{withAlpha(colorGreen, 0x66), isDarkTheme() ? 0xFF3A3A3C : 0xFFD1D1D6}));
+        serviceRow.addView(enableSwitch, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)));
+        serviceCard.addView(serviceRow);
         enableSwitch.setOnCheckedChangeListener(this::onEnableChanged);
 
-        LinearLayout connectionPanel = flatSection(root, "01", "连接设置");
-        LinearLayout navigationPanel = flatSection(root, "02", "导航设置");
-        LinearLayout musicPanel = flatSection(root, "03", "网易云设置");
-        LinearLayout devicePanel = flatSection(root, "04", "ESP32 设备设置");
-        LinearLayout developerPanel = flatSection(root, "05", "开发者选项");
+        LinearLayout connectionPanel = cardSection(root, "连接", "选择手机与 ESP32 之间的通信方式。");
+        LinearLayout devicePanel = cardSection(root, "ESP32 设备", "管理开发板网络、显示、BLE 与固件。");
+        LinearLayout navigationPanel = cardSection(root, "导航来源", "选择需要读取导航状态的高德应用。");
+        LinearLayout musicPanel = cardSection(root, "网易云音乐", "授权通知读取并校正逐字歌词时间。");
+        LinearLayout developerPanel = cardSection(root, "诊断", "查看实时数据并验证端到端链路。");
 
         musicStatusText = statusLine(musicPanel, "音乐读取", "正在检查通知使用权");
-        Button musicAccessButton = button("打开音乐读取权限");
+        Button musicAccessButton = secondaryButton("打开通知使用权");
         musicAccessButton.setOnClickListener(v -> openMusicAccessSettings());
         musicPanel.addView(musicAccessButton);
         musicPanel.addView(label("歌词延迟校正（毫秒）"));
@@ -187,7 +221,8 @@ public final class MainActivity extends Activity {
                 | InputType.TYPE_NUMBER_FLAG_SIGNED);
         musicPanel.addView(lyricOffsetInput);
         TextView musicHint = text("正数会让歌词提前，负数会让歌词延后；建议每次以 100–200 ms 微调。需要在系统“通知使用权”中允许本应用。", 12, false);
-        musicHint.setTextColor(0xFF4B5563);
+        musicHint.setTextColor(colorSecondary);
+        musicHint.setPadding(0, dp(8), 0, 0);
         musicPanel.addView(musicHint);
 
         connectionPanel.addView(label("通信方式"));
@@ -196,6 +231,7 @@ public final class MainActivity extends Activity {
                 android.R.layout.simple_spinner_dropdown_item,
                 new String[]{"UDP", "BLE"});
         transportSpinner.setAdapter(adapter);
+        styleSpinner(transportSpinner);
         connectionPanel.addView(transportSpinner);
         transportSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
@@ -218,15 +254,26 @@ public final class MainActivity extends Activity {
         portInput.setInputType(InputType.TYPE_CLASS_NUMBER);
         connectionPanel.addView(portInput);
 
-        Button deviceSettingsButton = button("打开设备控制台");
+        Button saveButton = button("保存连接设置");
+        saveButton.setOnClickListener(v -> {
+            saveSettings();
+            if (AppSettings.isEnabled(this)) {
+                startForwarder(ForwarderService.ACTION_START);
+            }
+            refreshStatus();
+            Toast.makeText(this, "设置已保存", Toast.LENGTH_SHORT).show();
+        });
+        connectionPanel.addView(saveButton);
+
+        Button deviceSettingsButton = button("打开设备设置");
         deviceSettingsButton.setOnClickListener(v -> {
             saveSettings();
             startActivity(new Intent(this, Esp32SettingsActivity.class));
         });
         devicePanel.addView(deviceSettingsButton);
         TextView deviceHint = text("在 App 内管理 Wi‑Fi、屏幕芯片、触摸、BLE 与 OTA；需能通过当前 IP 访问 ESP32。", 12, false);
-        deviceHint.setTextColor(0xFF64748B);
-        deviceHint.setPadding(0, dp(6), 0, 0);
+        deviceHint.setTextColor(colorSecondary);
+        deviceHint.setPadding(0, dp(8), 0, 0);
         devicePanel.addView(deviceHint);
 
         navigationPanel.addView(label("目标高德应用"));
@@ -235,6 +282,7 @@ public final class MainActivity extends Activity {
         ArrayAdapter<TargetAppChoice> targetAdapter = new ArrayAdapter<>(this,
                 android.R.layout.simple_spinner_dropdown_item, targetAppChoices);
         targetAppSpinner.setAdapter(targetAdapter);
+        styleSpinner(targetAppSpinner);
         navigationPanel.addView(targetAppSpinner);
 
         targetPackageInput = input(AppSettings.DEFAULT_TARGET_PACKAGE);
@@ -242,7 +290,8 @@ public final class MainActivity extends Activity {
                 | InputType.TYPE_TEXT_VARIATION_URI);
         navigationPanel.addView(targetPackageInput);
         TextView targetHint = text("下拉框会列出可见的高德/地图应用；共存版未列出时可直接填写包名。主动请求会发送给该应用。", 12, false);
-        targetHint.setTextColor(0xFF4B5563);
+        targetHint.setTextColor(colorSecondary);
+        targetHint.setPadding(0, dp(8), 0, 0);
         navigationPanel.addView(targetHint);
         targetAppSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
@@ -258,23 +307,7 @@ public final class MainActivity extends Activity {
             }
         });
 
-        LinearLayout buttonRow = new LinearLayout(this);
-        buttonRow.setOrientation(LinearLayout.HORIZONTAL);
-        buttonRow.setGravity(Gravity.CENTER_VERTICAL);
-        buttonRow.setPadding(0, dp(16), 0, dp(12));
-        root.addView(buttonRow);
-
-        Button saveButton = button("保存设置");
-        saveButton.setOnClickListener(v -> {
-            saveSettings();
-            if (AppSettings.isEnabled(this)) {
-                startForwarder(ForwarderService.ACTION_START);
-            }
-            refreshStatus();
-        });
-        buttonRow.addView(saveButton, rowButtonParams());
-
-        Button testButton = button("发送测试帧");
+        Button testButton = secondaryButton("发送测试帧");
         testButton.setOnClickListener(v -> {
             saveSettings();
             loadingSettings = true;
@@ -290,13 +323,14 @@ public final class MainActivity extends Activity {
         });
         developerPanel.addView(testButton);
 
-        developerPanel.addView(section("状态"));
+        developerPanel.addView(section("实时状态"));
         lastBroadcastText = statusLine(developerPanel, "最近广播", "尚未收到");
         lastSentText = statusLine(developerPanel, "最近发送", "尚未发送");
         payloadText = statusLine(developerPanel, "Payload", "0 bytes");
         trafficDiagnosticText = statusLine(developerPanel, "巡航灯诊断", "尚未收到红绿灯广播");
         errorText = statusLine(developerPanel, "最近错误", "无");
         networkHintText = text("", 14, false);
+        networkHintText.setTextColor(colorSecondary);
         networkHintText.setPadding(0, dp(12), 0, 0);
         developerPanel.addView(networkHintText);
 
@@ -490,6 +524,13 @@ public final class MainActivity extends Activity {
     }
 
     private void refreshStatus() {
+        boolean enabled = AppSettings.isEnabled(this);
+        String transport = AppSettings.TRANSPORT_BLE.equals(AppSettings.getTransport(this))
+                ? "BLE" : "UDP";
+        if (serviceStatusText != null) {
+            serviceStatusText.setText(enabled ? "已开启 · " + transport : "已关闭");
+            serviceStatusText.setTextColor(enabled ? colorGreen : colorSecondary);
+        }
         lastBroadcastText.setText("最近广播: " + formatTime(AppSettings.getLastBroadcast(this)));
         lastSentText.setText("最近发送: " + formatTime(AppSettings.getLastSent(this)));
         payloadText.setText("Payload: " + AppSettings.getLastPayloadBytes(this) + " bytes");
@@ -502,6 +543,7 @@ public final class MainActivity extends Activity {
         }
         String error = AppSettings.getLastError(this);
         errorText.setText("最近错误: " + (TextUtils.isEmpty(error) ? "无" : error));
+        errorText.setTextColor(TextUtils.isEmpty(error) ? colorSecondary : colorRed);
         networkHintText.setText(buildHint(error));
     }
 
@@ -730,39 +772,48 @@ public final class MainActivity extends Activity {
 
     private TextView label(String value) {
         TextView textView = text(value, 13, true);
-        textView.setTextColor(0xFF334155);
-        textView.setPadding(0, dp(14), 0, dp(4));
+        textView.setTextColor(colorSecondary);
+        textView.setPadding(0, dp(16), 0, dp(7));
         return textView;
     }
 
-    private LinearLayout flatSection(LinearLayout root, String index, String title) {
+    private LinearLayout card(LinearLayout root) {
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
-        TextView heading = text(index + "  " + title, 20, true);
-        heading.setTextColor(0xFF0F766E);
-        heading.setPadding(0, dp(24), 0, dp(10));
-        content.addView(heading);
-        View divider = new View(this);
-        divider.setBackgroundColor(0xFFD7DEE7);
-        content.addView(divider, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(1)));
-        content.setPadding(dp(4), 0, dp(4), dp(8));
-        LinearLayout.LayoutParams contentParams = new LinearLayout.LayoutParams(
+        content.setPadding(dp(18), dp(17), dp(18), dp(18));
+        content.setBackground(rounded(colorSurface, 20));
+        content.setElevation(dp(1));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        root.addView(content, contentParams);
+        params.setMargins(0, 0, 0, dp(14));
+        root.addView(content, params);
+        return content;
+    }
+
+    private LinearLayout cardSection(LinearLayout root, String title, String description) {
+        LinearLayout content = card(root);
+        TextView heading = text(title, 20, true);
+        heading.setTextColor(colorText);
+        heading.setLetterSpacing(-0.015f);
+        content.addView(heading);
+        TextView supporting = text(description, 13, false);
+        supporting.setTextColor(colorSecondary);
+        supporting.setPadding(0, dp(4), 0, dp(4));
+        content.addView(supporting);
         return content;
     }
 
     private TextView section(String value) {
-        TextView textView = text(value, 18, true);
-        textView.setTextColor(0xFF0F766E);
-        textView.setPadding(0, dp(20), 0, dp(8));
+        TextView textView = text(value, 15, true);
+        textView.setTextColor(colorText);
+        textView.setPadding(0, dp(22), 0, dp(8));
         return textView;
     }
 
     private TextView statusLine(LinearLayout root, String label, String value) {
         TextView textView = text(label + ": " + value, 14, false);
-        textView.setPadding(0, dp(3), 0, dp(3));
+        textView.setTextColor(colorSecondary);
+        textView.setPadding(0, dp(5), 0, dp(5));
         root.addView(textView);
         return textView;
     }
@@ -771,10 +822,10 @@ public final class MainActivity extends Activity {
         TextView textView = new TextView(this);
         textView.setText(value);
         textView.setTextSize(sp);
-        textView.setTextColor(0xFF0F172A);
+        textView.setTextColor(colorText);
         textView.setTypeface(android.graphics.Typeface.create(
                 bold ? "sans-serif-medium" : "sans-serif", 0));
-        textView.setLineSpacing(0, 1.08f);
+        textView.setLineSpacing(0, 1.12f);
         return textView;
     }
 
@@ -783,12 +834,13 @@ public final class MainActivity extends Activity {
         editText.setHint(hint);
         editText.setSingleLine(true);
         editText.setTextSize(16);
-        editText.setTextColor(0xFF0F172A);
-        editText.setHintTextColor(0xFF94A3B8);
+        editText.setTextColor(colorText);
+        editText.setHintTextColor(isDarkTheme() ? 0xFF7C7C80 : 0xFF8E8E93);
         editText.setPadding(dp(13), dp(11), dp(13), dp(11));
-        GradientDrawable background = rounded(0xFFF8FAFC, 10);
-        background.setStroke(dp(1), 0xFFCBD5E1);
+        GradientDrawable background = rounded(colorRaised, 12);
+        background.setStroke(dp(1), colorSeparator);
         editText.setBackground(background);
+        editText.setMinHeight(dp(48));
         return editText;
     }
 
@@ -798,9 +850,36 @@ public final class MainActivity extends Activity {
         button.setAllCaps(false);
         button.setTextColor(0xFFFFFFFF);
         button.setTextSize(15);
-        button.setBackgroundTintList(ColorStateList.valueOf(0xFF0F766E));
-        button.setPadding(dp(14), dp(10), dp(14), dp(10));
+        button.setTypeface(android.graphics.Typeface.create("sans-serif-medium", 0));
+        button.setGravity(Gravity.CENTER);
+        button.setMinHeight(dp(48));
+        button.setPadding(dp(16), dp(10), dp(16), dp(10));
+        button.setBackground(ripple(colorAccent, 12, 0x33FFFFFF));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.setMargins(0, dp(16), 0, 0);
+        button.setLayoutParams(params);
         return button;
+    }
+
+    private Button secondaryButton(String text) {
+        Button button = button(text);
+        button.setTextColor(colorAccent);
+        button.setBackground(ripple(withAlpha(colorAccent, isDarkTheme() ? 0x2B : 0x18),
+                12, withAlpha(colorAccent, 0x22)));
+        return button;
+    }
+
+    private void styleSpinner(Spinner spinner) {
+        spinner.setMinimumHeight(dp(48));
+        spinner.setPadding(dp(10), 0, dp(10), 0);
+        spinner.setBackgroundTintList(ColorStateList.valueOf(colorAccent));
+        spinner.setPopupBackgroundDrawable(rounded(colorSurface, 14));
+    }
+
+    private RippleDrawable ripple(int fillColor, int radiusDp, int rippleColor) {
+        return new RippleDrawable(ColorStateList.valueOf(rippleColor),
+                rounded(fillColor, radiusDp), null);
     }
 
     private GradientDrawable rounded(int color, int radiusDp) {
@@ -810,10 +889,27 @@ public final class MainActivity extends Activity {
         return drawable;
     }
 
-    private LinearLayout.LayoutParams rowButtonParams() {
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        lp.setMargins(0, 0, dp(8), 0);
-        return lp;
+    private void resolvePalette() {
+        boolean dark = isDarkTheme();
+        colorBackground = dark ? 0xFF000000 : 0xFFF2F2F7;
+        colorSurface = dark ? 0xFF1C1C1E : 0xFFFFFFFF;
+        colorRaised = dark ? 0xFF2C2C2E : 0xFFF7F7F9;
+        colorText = dark ? 0xFFF5F5F7 : 0xFF1C1C1E;
+        colorSecondary = dark ? 0xFFA1A1A6 : 0xFF6E6E73;
+        colorSeparator = dark ? 0xFF48484A : 0xFFD1D1D6;
+        colorAccent = dark ? 0xFF0A84FF : 0xFF007AFF;
+        colorGreen = dark ? 0xFF30D158 : 0xFF248A3D;
+        colorRed = dark ? 0xFFFF453A : 0xFFD70015;
+    }
+
+    private boolean isDarkTheme() {
+        int nightMode = getResources().getConfiguration().uiMode
+                & Configuration.UI_MODE_NIGHT_MASK;
+        return nightMode == Configuration.UI_MODE_NIGHT_YES;
+    }
+
+    private int withAlpha(int color, int alpha) {
+        return (alpha << 24) | (color & 0x00FFFFFF);
     }
 
     private String formatTime(long millis) {

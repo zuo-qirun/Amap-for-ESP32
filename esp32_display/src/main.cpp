@@ -45,11 +45,15 @@ void loop() {
   network.update();
   touch.update();
   const uint8_t touchCount = touch.touchCount();
+  const CapacitiveTouchPoint touchPoint = touchCount > 0
+                                              ? touch.point()
+                                              : CapacitiveTouchPoint{};
+  display.updateTouch(touchCount, touchPoint.x, touchPoint.y);
   if (touchCount != lastTouchCount) {
     lastTouchCount = touchCount;
     if (touchCount > 0) {
-      const CapacitiveTouchPoint point = touch.point();
-      Serial.printf("touch down: count=%u x=%d y=%d\n", touchCount, point.x, point.y);
+      Serial.printf("touch down: count=%u x=%d y=%d\n",
+                    touchCount, touchPoint.x, touchPoint.y);
     } else {
       Serial.println("touch up");
     }

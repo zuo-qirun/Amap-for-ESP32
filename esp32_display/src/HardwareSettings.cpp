@@ -6,6 +6,7 @@ namespace {
 constexpr const char* kNamespace = "amap_hw";
 constexpr const char* kTftDriver = "tft_driver";
 constexpr const char* kTouchEnabled = "touch";
+constexpr const char* kInvertColors = "invert";
 }  // namespace
 
 HardwareSettings HardwareSettings::load() {
@@ -15,6 +16,7 @@ HardwareSettings HardwareSettings::load() {
     settings.tftDriver = prefs.getInt(kTftDriver, AMAP_TFT_DRIVER);
     settings.touchEnabled = prefs.getBool(
         kTouchEnabled, AMAP_TFT_TOUCH_DRIVER == AMAP_TFT_TOUCH_DRIVER_FT6336U);
+    settings.invertColors = prefs.getBool(kInvertColors, AMAP_TFT_INVERT_COLORS != 0);
     prefs.end();
   }
   if (!settings.isValid()) {
@@ -33,8 +35,9 @@ bool HardwareSettings::save() const {
   }
   const bool driverSaved = prefs.putInt(kTftDriver, tftDriver) > 0;
   const bool touchSaved = prefs.putBool(kTouchEnabled, touchEnabled) > 0;
+  const bool inversionSaved = prefs.putBool(kInvertColors, invertColors) > 0;
   prefs.end();
-  return driverSaved && touchSaved;
+  return driverSaved && touchSaved && inversionSaved;
 }
 
 bool HardwareSettings::isValid() const {

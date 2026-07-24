@@ -15,6 +15,7 @@ final class Esp32UdpForwarder {
     private static final long MIN_INTERVAL_MS = 120L;
 
     private final Context appContext;
+    private final Esp32Transport.MediaControlListener mediaControlListener;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final AtomicLong seq = new AtomicLong(1L);
     private final AtomicBoolean sendPending = new AtomicBoolean(false);
@@ -23,8 +24,9 @@ final class Esp32UdpForwarder {
     private Esp32Transport transport;
     private String transportKey = "";
 
-    Esp32UdpForwarder(Context context) {
+    Esp32UdpForwarder(Context context, Esp32Transport.MediaControlListener mediaControlListener) {
         this.appContext = context.getApplicationContext();
+        this.mediaControlListener = mediaControlListener;
     }
 
     void send(Esp32NavState state, boolean force) {
@@ -112,9 +114,10 @@ final class Esp32UdpForwarder {
         }
         stop();
         if (AppSettings.TRANSPORT_BLE.equals(mode)) {
-            transport = new BleTransport(appContext);
+            transport = new BleTransport(appContext, mediaControlListener);
         } else {
-            transport = new UdpTransport(AppSettings.getEsp32Ip(appContext), AppSettings.getUdpPort(appContext));
+            transport = new UdpTransport(AppSettings.getEsp32Ip(appContext),
+                    AppSettings.getUdpPort(appContext), mediaControlListener);
         }
         transportKey = key;
         transport.start();

@@ -135,6 +135,32 @@ int NetworkManager::readPacket(char* buffer, size_t capacity, IPAddress& remoteI
   return length;
 }
 
+void NetworkManager::rememberControlPeer(const IPAddress& remoteIp, uint16_t remotePort) {
+  if (remotePort == 0) {
+    return;
+  }
+  controlPeerIp = remoteIp;
+  controlPeerPort = remotePort;
+  hasControlPeer = true;
+}
+
+bool NetworkManager::sendMediaControl(const char* action) {
+  if (!udpStarted || !hasControlPeer || action == nullptr || action[0] == '\0') {
+    return false;
+  }
+  const String payload = String("{\"type\":\"media_control\",\"action\":\"") +
+                         action + "\"}";
+  if (!udp.beginPacket(controlPeerIp, controlPeerPort)) {
+    return false;
+  }
+  udp.write(reinterpret_cast<const uint8_t*>(payload.c_str()), payload.length());
+  const bool sent = udp.endPacket() == 1;
+  Serial.printf("UDP media control %s:%u action=%s sent=%s\n",
+                controlPeerIp.toString().c_str(), controlPeerPort, action,
+                sent ? "true" : "false");
+  return sent;
+}
+
 bool NetworkManager::isConnected() const {
   return WiFi.status() == WL_CONNECTED;
 }

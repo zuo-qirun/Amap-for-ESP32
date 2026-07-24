@@ -23,6 +23,24 @@ String lastStatusText;
 bool displayReady = false;
 uint8_t lastTouchCount = 0;
 
+enum class ActiveInputLink : uint8_t { None, Udp, Ble };
+ActiveInputLink activeInputLink = ActiveInputLink::None;
+
+void sendMediaControl(MediaControlCommand command) {
+  const char* action = mediaControlAction(command);
+  bool sent = false;
+  if (activeInputLink == ActiveInputLink::Ble) {
+    sent = ble.sendMediaControl(action);
+    if (!sent) sent = network.sendMediaControl(action);
+  } else {
+    sent = network.sendMediaControl(action);
+    if (!sent) sent = ble.sendMediaControl(action);
+  }
+  if (!sent) {
+    Serial.printf("media control action=%s failed: no active return link\n", action);
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   delay(300);
@@ -49,6 +67,10 @@ void loop() {
                                               ? touch.point()
                                               : CapacitiveTouchPoint{};
   display.updateTouch(touchCount, touchPoint.x, touchPoint.y);
+  MediaControlCommand mediaCommand;
+  if (display.takeMediaControlCommand(mediaCommand)) {
+    sendMediaControl(mediaCommand);
+  }
   if (touchCount != lastTouchCount) {
     lastTouchCount = touchCount;
     if (touchCount > 0) {
@@ -70,6 +92,8 @@ void loop() {
   if (length > 0) {
     String error;
     if (parser.parse(packetBuffer, static_cast<size_t>(length), navState, error)) {
+      network.rememberControlPeer(remoteIp, remotePort);
+      activeInputLink = ActiveInputLink::Udp;
       Serial.printf("UDP %s:%u length=%d seq=%lu mode=%s active=%s lightCount=%u\n",
                     remoteIp.toString().c_str(),
                     remotePort,
@@ -92,6 +116,7 @@ void loop() {
   if (length > 0) {
     String error;
     if (parser.parse(packetBuffer, static_cast<size_t>(length), navState, error)) {
+      activeInputLink = ActiveInputLink::Ble;
       Serial.printf("BLE length=%d seq=%lu mode=%s active=%s lightCount=%u\n",
                     length,
                     static_cast<unsigned long>(navState.seq),

@@ -14,6 +14,7 @@ class BleReceiver {
 
   void begin();
   int readPacket(char* buffer, size_t capacity);
+  bool sendMediaControl(const char* action);
   bool isConnected() const;
   String deviceName() const;
   int bondCount() const;
@@ -38,6 +39,7 @@ class BleReceiver {
   QueueHandle_t completedQueue;
   NimBLEServer* server;
   NimBLECharacteristic* rxCharacteristic;
+  NimBLECharacteristic* txCharacteristic;
   ServerCallbacks* serverCallbacks;
   RxCallbacks* rxCallbacks;
   String advertisedName;

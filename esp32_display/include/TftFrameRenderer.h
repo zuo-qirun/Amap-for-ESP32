@@ -5,6 +5,7 @@
 #include <U8g2_for_Adafruit_GFX.h>
 
 #include "NavState.h"
+#include "MediaControlCommand.h"
 #include "TftViewMode.h"
 
 // Draws the logical 320x240 frame onto any Adafruit_GFX-compatible target.
@@ -14,7 +15,8 @@ public:
   static void render(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                      const NavState& state, bool wifiConnected, bool bleConnected,
                      const String& ip, uint16_t port, unsigned long silenceMs,
-                     TftViewMode viewMode = TftViewMode::Auto);
+                     TftViewMode viewMode = TftViewMode::Auto,
+                     MediaControlCommand pressedControl = MediaControlCommand::None);
   static void drawGestureHint(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                               TftViewMode viewMode);
 
@@ -27,7 +29,7 @@ private:
   static void renderCruise(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                            const NavState& state);
   static void renderMusic(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
-                          const MusicState& music);
+                          const MusicState& music, MediaControlCommand pressedControl);
   static void drawMusicOverlay(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                                const MusicState& music);
   static void drawShell(Adafruit_GFX& display);

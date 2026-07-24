@@ -3,6 +3,7 @@
 #include <Adafruit_GFX.h>
 #include <Arduino.h>
 #include "NavState.h"
+#include "MediaControlCommand.h"
 #include "TftViewMode.h"
 
 // Buffered SPI TFT dashboard. A complete frame is composed in PSRAM before it
@@ -14,6 +15,7 @@ public:
   void begin();
   bool isReady() const;
   void updateTouch(uint8_t touchCount, int16_t x = 0, int16_t y = 0);
+  bool takeMediaControlCommand(MediaControlCommand& command);
   void render(const NavState& state, bool wifiConnected, bool bleConnected, const String& ip,
               uint16_t port, unsigned long silenceMs);
   const char* currentViewName() const;
@@ -46,6 +48,9 @@ private:
   uint32_t lastFrameSignature = 0;
   TftViewMode viewMode = TftViewMode::Auto;
   bool touching = false;
+  bool musicControlsVisible = false;
+  MediaControlCommand pressedMediaControl = MediaControlCommand::None;
+  MediaControlCommand pendingMediaControl = MediaControlCommand::None;
   bool directionLocked = false;
   bool horizontalGesture = false;
   int16_t touchStartX = 0;
@@ -71,4 +76,5 @@ private:
   void finishHorizontalTransition();
   void compositeHorizontalSlide(int16_t offset);
   TftViewMode adjacentView(int direction) const;
+  MediaControlCommand hitTestMediaControl(int16_t x, int16_t y) const;
 };

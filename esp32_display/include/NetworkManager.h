@@ -20,6 +20,8 @@ public:
              BleReceiver* ble = nullptr);
   void update();
   int readPacket(char* buffer, size_t capacity, IPAddress& remoteIp, uint16_t& remotePort);
+  void rememberControlPeer(const IPAddress& remoteIp, uint16_t remotePort);
+  bool sendMediaControl(const char* action);
   bool isConnected() const;
   bool isConfigPortalActive() const;
   bool isWebReady() const;
@@ -55,6 +57,9 @@ private:
   bool reconnectScheduled = false;
   bool udpStarted = false;
   bool developerPreviewEnabled = false;
+  IPAddress controlPeerIp;
+  uint16_t controlPeerPort = 0;
+  bool hasControlPeer = false;
   HardwareSettings hardwareSettings;
   bool manualUploadActive = false;
   bool manualUploadSucceeded = false;

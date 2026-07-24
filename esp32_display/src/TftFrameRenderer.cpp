@@ -248,9 +248,9 @@ void drawAlphaBitmap(Adafruit_GFX& display, const NaviLinkIcons::Bitmap& bitmap,
 }  // namespace
 
 void TftFrameRenderer::render(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
-                              const NavState& state, bool wifiConnected, bool bleConnected,
-                              const String& ip, uint16_t port, unsigned long silenceMs,
-                              TftViewMode viewMode) {
+                               const NavState& state, bool wifiConnected, bool bleConnected,
+                               const String& ip, uint16_t port, unsigned long silenceMs,
+                               TftViewMode viewMode, MediaControlCommand pressedControl) {
   if (state.music.active) {
     AlbumArtCache::instance().request(state.music.coverUrl, wifiConnected);
   }
@@ -277,7 +277,7 @@ void TftFrameRenderer::render(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font
       renderStandby(display, font, "暂无音乐数据", "打开网易云音乐后自动更新",
                     wifiConnected, bleConnected, ip, port);
     } else {
-      renderMusic(display, font, state.music);
+      renderMusic(display, font, state.music, pressedControl);
     }
     return;
   }
@@ -291,7 +291,7 @@ void TftFrameRenderer::render(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font
     renderStandby(display, font, "手机数据已暂停", "正在等待新的 UDP / BLE 数据",
                   wifiConnected, bleConnected, ip, port);
   } else if (!state.active && state.music.active) {
-    renderMusic(display, font, state.music);
+    renderMusic(display, font, state.music, pressedControl);
   } else if (!state.active) {
     renderStandby(display, font, "等待导航或音乐", "打开高德导航或网易云音乐",
                   wifiConnected, bleConnected, ip, port);
@@ -333,7 +333,8 @@ void TftFrameRenderer::drawGestureHint(Adafruit_GFX& display,
 }
 
 void TftFrameRenderer::renderMusic(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
-                                   const MusicState& music) {
+                                    const MusicState& music,
+                                    MediaControlCommand pressedControl) {
   const unsigned long now = millis();
   const int64_t positionMs = music.positionAt(now);
   const int wordProgressPermille = music.wordProgressAt(now);
@@ -396,16 +397,29 @@ void TftFrameRenderer::renderMusic(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX&
     }
   }
 
-  // Minimal transport controls echo the extension's transparent bottom bar.
-  display.fillTriangle(35, 213, 43, 207, 43, 219, idleLyric);
-  display.fillCircle(77, 213, 16, alphaBlend(kCanvas, kText, 0xE6));
+  // 42 px touch targets provide direct press feedback while keeping the
+  // transport controls visually restrained.
+  const uint16_t previousColor = pressedControl == MediaControlCommand::Previous
+                                     ? accent : idleLyric;
+  const uint16_t nextColor = pressedControl == MediaControlCommand::Next
+                                 ? accent : idleLyric;
+  if (pressedControl == MediaControlCommand::Previous) {
+    display.fillCircle(39, 213, 17, alphaBlend(kCanvas, accent, 0x35));
+  }
+  if (pressedControl == MediaControlCommand::Next) {
+    display.fillCircle(123, 213, 17, alphaBlend(kCanvas, accent, 0x35));
+  }
+  display.fillTriangle(35, 213, 43, 207, 43, 219, previousColor);
+  const uint16_t playSurface = pressedControl == MediaControlCommand::PlayPause
+                                   ? accent : alphaBlend(kCanvas, kText, 0xE6);
+  display.fillCircle(77, 213, 16, playSurface);
   if (music.playing) {
     display.fillRect(72, 206, 3, 14, kCanvas);
     display.fillRect(79, 206, 3, 14, kCanvas);
   } else {
     display.fillTriangle(73, 205, 73, 221, 84, 213, kCanvas);
   }
-  display.fillTriangle(119, 207, 119, 219, 127, 213, idleLyric);
+  display.fillTriangle(119, 207, 119, 219, 127, 213, nextColor);
   drawUtf8(font, 15, 238, formatTime(positionMs), distantLyric);
   const String duration = formatTime(music.durationMs);
   drawUtf8(font, 141 - textWidth(font, duration), 238,

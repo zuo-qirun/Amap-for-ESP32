@@ -94,13 +94,16 @@ void hashMusic(uint32_t& hash, const MusicState& music, bool includePosition,
 
 uint32_t frameSignature(const NavState& state, bool wifiConnected, bool bleConnected,
                          const String& ip, uint16_t port, unsigned long silenceMs,
-                         unsigned long now, TftViewMode viewMode,
-                         int16_t dragOffsetX, bool showGestureHint) {
+                          unsigned long now, TftViewMode viewMode,
+                          int16_t dragOffsetX, bool showGestureHint,
+                          MediaControlCommand pressedControl) {
   uint32_t hash = 2166136261UL;
   const uint8_t view = static_cast<uint8_t>(viewMode);
   hashValue(hash, view);
   hashValue(hash, dragOffsetX);
   hashValue(hash, showGestureHint);
+  const uint8_t pressed = static_cast<uint8_t>(pressedControl);
+  hashValue(hash, pressed);
   const bool connected = wifiConnected || bleConnected;
   const uint8_t screenState = !connected ? 0
                               : silenceMs > AMAP_STANDBY_MS ? 1
@@ -302,6 +305,15 @@ void TftRenderer::updateTouch(uint8_t touchCount, int16_t x, int16_t y) {
   }
 }
 
+bool TftRenderer::takeMediaControlCommand(MediaControlCommand& command) {
+  if (pendingMediaControl == MediaControlCommand::None) {
+    return false;
+  }
+  command = pendingMediaControl;
+  pendingMediaControl = MediaControlCommand::None;
+  return true;
+}
+
 const char* TftRenderer::currentViewName() const {
   switch (viewMode) {
     case TftViewMode::Navigation: return "navigation";
@@ -325,6 +337,8 @@ void TftRenderer::beginTouch(int16_t x, int16_t y, unsigned long now) {
   touchStartedAt = now;
   lastSampleAt = now;
   gestureHintUntil = now + 650UL;
+  pressedMediaControl = musicControlsVisible ? hitTestMediaControl(x, y)
+                                             : MediaControlCommand::None;
 }
 
 void TftRenderer::moveTouch(int16_t x, int16_t y, unsigned long now) {
@@ -333,6 +347,9 @@ void TftRenderer::moveTouch(int16_t x, int16_t y, unsigned long now) {
   if (!directionLocked && (abs(deltaX) >= 10 || abs(deltaY) >= 10)) {
     directionLocked = true;
     horizontalGesture = abs(deltaX) > abs(deltaY);
+  }
+  if (directionLocked) {
+    pressedMediaControl = MediaControlCommand::None;
   }
   const unsigned long elapsed = now - lastSampleAt;
   if (elapsed > 0 && x != lastSampleX) {
@@ -353,6 +370,16 @@ void TftRenderer::endTouch(unsigned long now) {
   const int16_t deltaY = lastSampleY - touchStartY;
   const unsigned long duration = now - touchStartedAt;
   touching = false;
+  if (!directionLocked && pressedMediaControl != MediaControlCommand::None &&
+      hitTestMediaControl(lastSampleX, lastSampleY) == pressedMediaControl &&
+      duration < 700UL) {
+    pendingMediaControl = pressedMediaControl;
+    Serial.printf("touch media control: %s\n", mediaControlAction(pendingMediaControl));
+    pressedMediaControl = MediaControlCommand::None;
+    gestureHintUntil = 0;
+    return;
+  }
+  pressedMediaControl = MediaControlCommand::None;
   if (directionLocked && horizontalGesture) {
     const float projected = dragOffsetX + releaseVelocityX * 0.12f;
     const bool commit = abs(projected) >= 64;
@@ -438,6 +465,16 @@ TftViewMode TftRenderer::adjacentView(int direction) const {
   return static_cast<TftViewMode>((current + direction + count) % count);
 }
 
+MediaControlCommand TftRenderer::hitTestMediaControl(int16_t x, int16_t y) const {
+  if (!musicControlsVisible || y < 195 || y > 232) {
+    return MediaControlCommand::None;
+  }
+  if (x >= 15 && x <= 56) return MediaControlCommand::Previous;
+  if (x >= 57 && x <= 98) return MediaControlCommand::PlayPause;
+  if (x >= 99 && x <= 141) return MediaControlCommand::Next;
+  return MediaControlCommand::None;
+}
+
 void TftRenderer::compositeHorizontalSlide(int16_t offset) {
   if (offset == 0) {
     return;
@@ -470,22 +507,27 @@ void TftRenderer::render(const NavState& state, bool wifiConnected, bool bleConn
   const bool connected = wifiConnected || bleConnected;
   const unsigned long now = millis();
   advanceSpring(now);
-  const bool showGestureHint = touching || springActive ||
-                               static_cast<long>(gestureHintUntil - now) > 0;
+  musicControlsVisible = state.music.active && connected &&
+      ((viewMode == TftViewMode::Music && silenceMs <= AMAP_STANDBY_MS) ||
+       (viewMode == TftViewMode::Auto && silenceMs <= AMAP_STALE_MS && !state.active));
+  const bool showGestureHint = pressedMediaControl == MediaControlCommand::None &&
+                               (touching || springActive ||
+                                static_cast<long>(gestureHintUntil - now) > 0);
   const uint32_t signature =
       frameSignature(state, wifiConnected, bleConnected, ip, port, silenceMs, now,
-                     viewMode, dragOffsetX, showGestureHint);
+                      viewMode, dragOffsetX, showGestureHint, pressedMediaControl);
   if (frameDrawn && signature == lastFrameSignature) {
     return;
   }
 
   const uint32_t frameStartedAt = micros();
   TftFrameRenderer::render(canvas, tftFont, state, wifiConnected, bleConnected, ip, port,
-                           silenceMs, viewMode);
+                            silenceMs, viewMode, pressedMediaControl);
   if (dragOffsetX != 0) {
     const int direction = dragOffsetX < 0 ? 1 : -1;
     TftFrameRenderer::render(adjacentFrame, adjacentFont, state, wifiConnected, bleConnected,
-                             ip, port, silenceMs, adjacentView(direction));
+                              ip, port, silenceMs, adjacentView(direction),
+                              MediaControlCommand::None);
     compositeHorizontalSlide(dragOffsetX);
   }
   if (showGestureHint) {

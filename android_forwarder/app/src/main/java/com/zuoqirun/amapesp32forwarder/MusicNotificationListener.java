@@ -16,6 +16,7 @@ import java.util.List;
 public final class MusicNotificationListener extends NotificationListenerService {
     static final String NETEASE_PACKAGE = "com.netease.cloudmusic";
     private static final String TAG = "NetEaseMusic";
+    private static volatile MusicNotificationListener activeInstance;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private MediaSessionManager sessionManager;
@@ -43,6 +44,7 @@ public final class MusicNotificationListener extends NotificationListenerService
     @Override
     public void onCreate() {
         super.onCreate();
+        activeInstance = this;
         MusicStateStore.initialize(this);
         sessionManager = (MediaSessionManager) getSystemService(MEDIA_SESSION_SERVICE);
     }
@@ -77,7 +79,51 @@ public final class MusicNotificationListener extends NotificationListenerService
     @Override
     public void onDestroy() {
         stopListening();
+        if (activeInstance == this) {
+            activeInstance = null;
+        }
         super.onDestroy();
+    }
+
+    static boolean dispatchMediaControl(String action) {
+        MusicNotificationListener instance = activeInstance;
+        if (instance == null || action == null) {
+            return false;
+        }
+        instance.handler.post(() -> instance.applyMediaControl(action));
+        return true;
+    }
+
+    private void applyMediaControl(String action) {
+        if (controller == null) {
+            refreshSessions();
+        }
+        MediaController current = controller;
+        if (current == null) {
+            AppSettings.noteError(this, "未找到网易云音乐的活动播放会话");
+            return;
+        }
+        MediaController.TransportControls controls = current.getTransportControls();
+        switch (action) {
+            case MediaControlCommand.PREVIOUS:
+                controls.skipToPrevious();
+                break;
+            case MediaControlCommand.NEXT:
+                controls.skipToNext();
+                break;
+            case MediaControlCommand.PLAY_PAUSE:
+                PlaybackState state = current.getPlaybackState();
+                if (MediaControlCommand.isPlaying(
+                        state == null ? PlaybackState.STATE_NONE : state.getState())) {
+                    controls.pause();
+                } else {
+                    controls.play();
+                }
+                break;
+            default:
+                return;
+        }
+        Log.i(TAG, "ESP32 media control: " + action);
     }
 
     private void refreshSessions() {

@@ -49,6 +49,7 @@ BleReceiver::BleReceiver()
     : completedQueue(nullptr),
       server(nullptr),
       rxCharacteristic(nullptr),
+      txCharacteristic(nullptr),
       serverCallbacks(nullptr),
       rxCallbacks(nullptr),
       connected(false),
@@ -95,6 +96,10 @@ void BleReceiver::begin() {
       512);
   rxCallbacks = new RxCallbacks(this);
   rxCharacteristic->setCallbacks(rxCallbacks);
+  txCharacteristic = service->createCharacteristic(
+      AMAP_BLE_TX_UUID,
+      NIMBLE_PROPERTY::NOTIFY,
+      160);
   service->start();
 
   NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
@@ -115,6 +120,19 @@ int BleReceiver::readPacket(char* buffer, size_t capacity) {
   const size_t length = min(static_cast<size_t>(dequeuedPacket.length), capacity);
   memcpy(buffer, dequeuedPacket.data, length);
   return static_cast<int>(length);
+}
+
+bool BleReceiver::sendMediaControl(const char* action) {
+  if (!connected || txCharacteristic == nullptr || action == nullptr || action[0] == '\0') {
+    return false;
+  }
+  const String payload = String("{\"type\":\"media_control\",\"action\":\"") +
+                         action + "\"}";
+  txCharacteristic->setValue(
+      reinterpret_cast<const uint8_t*>(payload.c_str()), payload.length());
+  txCharacteristic->notify();
+  Serial.printf("BLE media control action=%s notified=true\n", action);
+  return true;
 }
 
 bool BleReceiver::isConnected() const {

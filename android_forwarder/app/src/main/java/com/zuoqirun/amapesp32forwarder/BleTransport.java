@@ -6,6 +6,7 @@ import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothGatt;
 import android.bluetooth.BluetoothGattCallback;
 import android.bluetooth.BluetoothGattCharacteristic;
+import android.bluetooth.BluetoothGattDescriptor;
 import android.bluetooth.BluetoothGattService;
 import android.bluetooth.BluetoothManager;
 import android.bluetooth.le.BluetoothLeScanner;
@@ -28,14 +29,20 @@ final class BleTransport implements Esp32Transport {
             "6e400001-b5a3-f393-e0a9-e50e24dcca9e");
     private static final UUID RX_UUID = UUID.fromString(
             "6e400002-b5a3-f393-e0a9-e50e24dcca9e");
+    private static final UUID TX_UUID = UUID.fromString(
+            "6e400003-b5a3-f393-e0a9-e50e24dcca9e");
+    private static final UUID CCCD_UUID = UUID.fromString(
+            "00002902-0000-1000-8000-00805f9b34fb");
     private static final long CONNECT_TIMEOUT_MS = 18000L;
     private static final long WRITE_TIMEOUT_MS = 5000L;
 
     private final Context context;
+    private final MediaControlListener mediaControlListener;
     private final Object lock = new Object();
     private BluetoothLeScanner scanner;
     private BluetoothGatt gatt;
     private BluetoothGattCharacteristic rxCharacteristic;
+    private BluetoothGattCharacteristic txCharacteristic;
     private IOException failure;
     private boolean active;
     private boolean connecting;
@@ -44,8 +51,9 @@ final class BleTransport implements Esp32Transport {
     private int negotiatedMtu = 23;
     private int nextFrameId = 1;
 
-    BleTransport(Context context) {
+    BleTransport(Context context, MediaControlListener mediaControlListener) {
         this.context = context.getApplicationContext();
+        this.mediaControlListener = mediaControlListener;
     }
 
     @Override
@@ -109,6 +117,7 @@ final class BleTransport implements Esp32Transport {
             connecting = false;
             writeInFlight = false;
             rxCharacteristic = null;
+            txCharacteristic = null;
             failure = new IOException("BLE 连接已停止");
             targetGatt = gatt;
             gatt = null;
@@ -350,9 +359,11 @@ final class BleTransport implements Esp32Transport {
                 return;
             }
             BluetoothGattService service = callbackGatt.getService(SERVICE_UUID);
-            BluetoothGattCharacteristic characteristic = service == null
+            BluetoothGattCharacteristic rx = service == null
                     ? null : service.getCharacteristic(RX_UUID);
-            if (characteristic == null) {
+            BluetoothGattCharacteristic tx = service == null
+                    ? null : service.getCharacteristic(TX_UUID);
+            if (rx == null || tx == null) {
                 fail(new IOException("设备缺少 AMap-ESP32 BLE 接收特征"));
                 return;
             }
@@ -361,11 +372,55 @@ final class BleTransport implements Esp32Transport {
                     return;
                 }
                 gatt = callbackGatt;
-                rxCharacteristic = characteristic;
+                rxCharacteristic = rx;
+                txCharacteristic = tx;
+            }
+            BluetoothGattDescriptor cccd = tx.getDescriptor(CCCD_UUID);
+            if (cccd == null || !callbackGatt.setCharacteristicNotification(tx, true)) {
+                fail(new IOException("Unable to subscribe to ESP32 media controls"));
+                return;
+            }
+            cccd.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
+            try {
+                if (!callbackGatt.writeDescriptor(cccd)) {
+                    fail(new IOException("Unable to enable ESP32 media-control notifications"));
+                }
+            } catch (SecurityException error) {
+                fail(new IOException("BLE notification permission denied", error));
+            }
+        }
+
+        @Override
+        public void onDescriptorWrite(BluetoothGatt callbackGatt,
+                                      BluetoothGattDescriptor descriptor,
+                                      int status) {
+            if (!CCCD_UUID.equals(descriptor.getUuid())) {
+                return;
+            }
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                fail(new IOException("BLE notification subscription failed: " + status));
+                return;
+            }
+            synchronized (lock) {
+                if (!active) {
+                    return;
+                }
                 connecting = false;
                 ready = true;
                 failure = null;
                 lock.notifyAll();
+            }
+        }
+
+        @Override
+        public void onCharacteristicChanged(BluetoothGatt callbackGatt,
+                                            BluetoothGattCharacteristic characteristic) {
+            if (!TX_UUID.equals(characteristic.getUuid())) {
+                return;
+            }
+            String action = MediaControlCommand.parse(characteristic.getValue());
+            if (action != null && mediaControlListener != null) {
+                mediaControlListener.onMediaControl(action);
             }
         }
 

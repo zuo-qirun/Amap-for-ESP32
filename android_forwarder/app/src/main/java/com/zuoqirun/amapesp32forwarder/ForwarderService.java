@@ -59,7 +59,7 @@ public final class ForwarderService extends Service implements AMapBroadcastRece
     public void onCreate() {
         super.onCreate();
         aggregator = new AMapStateAggregator();
-        forwarder = new Esp32UdpForwarder(this);
+        forwarder = new Esp32UdpForwarder(this, this::onMediaControl);
         MusicStateStore.initialize(this);
         startForeground(NOTIFICATION_ID, buildNotification());
         acquireBackgroundLocks();
@@ -136,6 +136,15 @@ public final class ForwarderService extends Service implements AMapBroadcastRece
     private Esp32NavState withMusic(Esp32NavState snapshot) {
         MusicStateStore.copyInto(snapshot.music);
         return snapshot;
+    }
+
+    private void onMediaControl(String action) {
+        handler.post(() -> {
+            if (!MusicNotificationListener.dispatchMediaControl(action)) {
+                AppSettings.noteError(this, "请先授予通知访问权限以控制网易云音乐");
+                Log.w(TAG, "Media control ignored because notification listener is unavailable");
+            }
+        });
     }
 
     private void registerAmapReceiver() {

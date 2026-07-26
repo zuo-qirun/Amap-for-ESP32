@@ -1,6 +1,6 @@
 # AMap ESP32-S3 Navigation Display
 
-这是一个独立项目，用轻量 Android 转发 App 监听高德地图车机版广播并读取网易云音乐播放状态，聚合成完整快照后通过 Wi-Fi UDP 或 BLE 发给 ESP32-S3。ESP32-S3 负责接收 JSON，并在 OLED/TFT 上显示导航或歌词与播放进度。
+这是一个独立项目，用轻量 Android 转发 App 监听高德地图车机版广播并读取标准音乐播放器的播放状态，聚合成完整快照后通过 Wi-Fi UDP 或 BLE 发给 ESP32-S3。ESP32-S3 负责接收 JSON，并在 OLED/TFT 上显示导航或歌词与播放进度。
 
 ## 许可证
 
@@ -45,7 +45,7 @@ Android 端不做悬浮窗、不复用 `WindowManager` UI，只复用高德广�
 1. `ForwarderService` 启动前台服务，动态注册高德车机版广播。
 2. `AMapBroadcastReceiver` 收到广播后交给 `AMapStateAggregator`。
 3. `AMapStateAggregator` 按字段增量更新本地完整状态，但输出完整 `Esp32NavState` 快照。
-4. `MusicNotificationListener` 通过通知使用权读取网易云 `MediaSession`，歌词客户端按歌曲 ID 或歌名/歌手匹配并缓存 LRC/YRC 时间轴歌词；支持逐字高亮、长歌词提前滚动和可配置的正负延迟校正。
+4. `MusicNotificationListener` 通过通知使用权自动读取标准 `MediaSession`，优先选择正在播放的会话，并识别网易云、QQ 音乐、酷狗、酷我、Spotify、汽水音乐等主流应用。歌词客户端使用网易云曲库按歌曲 ID（仅网易云）或歌名/歌手匹配并缓存 LRC/YRC 时间轴歌词；支持逐字高亮、长歌词提前滚动和可配置的正负延迟校正。
 5. `Esp32Protocol` 把导航和音乐快照序列化为协议 v1 JSON。
 6. `Esp32UdpForwarder` 节流发送，并按设置选择 UDP 或 BLE；BLE 会自动扫描 `AMap-ESP32-*`，无需系统配对。
 
@@ -142,6 +142,7 @@ Android 端不做悬浮窗、不复用 `WindowManager` UI，只复用高德广�
     "active": true,
     "playing": true,
     "source": "netease",
+    "sourceName": "网易云音乐",
     "songId": 186016,
     "title": "晴天",
     "artist": "周杰伦",

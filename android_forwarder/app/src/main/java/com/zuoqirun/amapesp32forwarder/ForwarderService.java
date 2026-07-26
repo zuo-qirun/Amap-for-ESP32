@@ -13,6 +13,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.os.SystemClock;
 import android.util.Log;
 import android.net.wifi.WifiManager;
 
@@ -33,7 +34,13 @@ public final class ForwarderService extends Service implements AMapBroadcastRece
         @Override
         public void run() {
             if (AppSettings.isEnabled(ForwarderService.this)) {
+                long now = SystemClock.elapsedRealtime();
+                if (now - lastMusicSessionPollAt >= 600L) {
+                    lastMusicSessionPollAt = now;
+                    MusicNotificationListener.refreshMediaState();
+                }
                 forwarder.sendMusicUpdate(withMusic(aggregator.snapshot()));
+                refreshPhone(false);
                 handler.postDelayed(this, MusicStateStore.isActive() ? 200L : 1000L);
             }
         }
@@ -52,14 +59,21 @@ public final class ForwarderService extends Service implements AMapBroadcastRece
     private AMapBroadcastReceiver receiver;
     private AMapStateAggregator aggregator;
     private Esp32UdpForwarder forwarder;
+    private PhoneCompanionManager phoneCompanion;
+    private static volatile ForwarderService activeInstance;
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
+    private long lastMusicSessionPollAt;
+    private String lastPhoneFingerprint = "";
+    private int mediaControlGeneration;
 
     @Override
     public void onCreate() {
         super.onCreate();
         aggregator = new AMapStateAggregator();
         forwarder = new Esp32UdpForwarder(this, this::onMediaControl);
+        phoneCompanion = new PhoneCompanionManager(this);
+        activeInstance = this;
         MusicStateStore.initialize(this);
         startForeground(NOTIFICATION_ID, buildNotification());
         acquireBackgroundLocks();
@@ -101,6 +115,8 @@ public final class ForwarderService extends Service implements AMapBroadcastRece
         if (forwarder != null) {
             forwarder.shutdown();
         }
+        if (phoneCompanion != null) phoneCompanion.shutdown();
+        if (activeInstance == this) activeInstance = null;
         releaseBackgroundLocks();
         super.onDestroy();
     }
@@ -135,16 +151,51 @@ public final class ForwarderService extends Service implements AMapBroadcastRece
 
     private Esp32NavState withMusic(Esp32NavState snapshot) {
         MusicStateStore.copyInto(snapshot.music);
+        PhoneStateStore.copyInto(snapshot.phone, AppSettings.isPhoneEnabled(this));
         return snapshot;
+    }
+
+    static void requestPhoneRefresh() {
+        ForwarderService service = activeInstance;
+        if (service != null) service.handler.post(() -> service.refreshPhone(true));
+    }
+
+    private void refreshPhone(boolean immediate) {
+        if (!AppSettings.isPhoneEnabled(this)) return;
+        if (phoneCompanion != null) phoneCompanion.refresh();
+        Esp32NavState snapshot = withMusic(aggregator.snapshot());
+        String fingerprint = snapshot.phone.fingerprint();
+        if (immediate || !fingerprint.equals(lastPhoneFingerprint)) {
+            lastPhoneFingerprint = fingerprint;
+            forwarder.sendPhoneUpdate(snapshot);
+        }
     }
 
     private void onMediaControl(String action) {
         handler.post(() -> {
+            int generation = ++mediaControlGeneration;
             if (!MusicNotificationListener.dispatchMediaControl(action)) {
-                AppSettings.noteError(this, "请先授予通知访问权限以控制网易云音乐");
+                AppSettings.noteError(this, "请先授予通知访问权限以控制音乐播放器");
                 Log.w(TAG, "Media control ignored because notification listener is unavailable");
+                return;
+            }
+            MusicStateStore.beginMediaControl(action);
+            sendCriticalMusicSnapshot();
+            long[] refreshDelaysMs = {120L, 400L, 1000L, 1800L};
+            for (long delayMs : refreshDelaysMs) {
+                handler.postDelayed(() -> {
+                    if (generation != mediaControlGeneration) {
+                        return;
+                    }
+                    MusicNotificationListener.refreshMediaState();
+                    sendCriticalMusicSnapshot();
+                }, delayMs);
             }
         });
+    }
+
+    private void sendCriticalMusicSnapshot() {
+        forwarder.sendCriticalMusicUpdate(withMusic(aggregator.snapshot()));
     }
 
     private void registerAmapReceiver() {

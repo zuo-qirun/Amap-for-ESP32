@@ -51,6 +51,7 @@ void NavState::reset() {
   roadInfo = RoadInfoState();
   guide = GuideInfoState();
   music = MusicState();
+  phone = PhoneState();
   alert = "";
   detail = "";
   seq = 0;

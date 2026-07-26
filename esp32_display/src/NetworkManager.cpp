@@ -1,6 +1,7 @@
 #include "NetworkManager.h"
 
 #include "Config.h"
+#include "WeatherService.h"
 
 #include <Esp.h>
 #include <Update.h>
@@ -24,10 +25,12 @@ NetworkManager::NetworkManager()
       portalGateway(192, 168, 4, 1),
       portalSubnet(255, 255, 255, 0) {}
 
-void NetworkManager::begin(OtaManager* ota, const NavState* navigation, BleReceiver* ble) {
+void NetworkManager::begin(OtaManager* ota, const NavState* navigation, BleReceiver* ble,
+                           WeatherService* weather) {
   otaManager = ota;
   navigationState = navigation;
   bleReceiver = ble;
+  weatherService = weather;
   WiFi.persistent(false);
   // ESP32-S3 radio coexistence requires Wi-Fi modem sleep while BLE is
   // enabled. Disabling it makes the Wi-Fi task abort as soon as both radios
@@ -393,6 +396,7 @@ void NetworkManager::configureRoutes() {
 
   webServer.on("/", HTTP_GET, [this]() { handleRoot(); });
   webServer.on("/save", HTTP_POST, [this]() { handleSave(); });
+  webServer.on("/weather/save", HTTP_POST, [this]() { handleWeatherSave(); });
   webServer.on("/clear", HTTP_POST, [this]() { handleClear(); });
   webServer.on("/ota/check", HTTP_POST, [this]() { handleOtaCheck(); });
   webServer.on("/ota/upgrade", HTTP_POST, [this]() { handleOtaUpgrade(); });
@@ -446,6 +450,23 @@ void NetworkManager::handleSave() {
   webServer.sendHeader("Cache-Control", "no-store");
   webServer.send(200, "text/html; charset=utf-8",
                  buildStatusPage("已保存 Wi-Fi，ESP32 正在连接 " + ssid + "。"));
+}
+
+void NetworkManager::handleWeatherSave() {
+  if (weatherService == nullptr) {
+    webServer.send(503, "text/html; charset=utf-8", buildStatusPage("天气服务未初始化。"));
+    return;
+  }
+  String city = webServer.arg("weatherCity");
+  city.trim();
+  if (!weatherService->setCityName(city)) {
+    webServer.send(400, "text/html; charset=utf-8",
+                   buildStatusPage("城市名称至少需要两个字符。"));
+    return;
+  }
+  webServer.sendHeader("Cache-Control", "no-store");
+  webServer.send(200, "text/html; charset=utf-8",
+                 buildStatusPage("已保存天气城市，联网后将自动刷新。"));
 }
 
 void NetworkManager::handleClear() {
@@ -778,11 +799,11 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += F("<title>AMap ESP32 配置</title><style>");
   page += F(":root{color-scheme:light dark;--bg:#f2f2f7;--surface:rgba(255,255,255,.78);--solid:#fff;--raised:#f9f9fb;--ink:#1c1c1e;--muted:#6e6e73;--line:rgba(60,60,67,.14);--accent:#007aff;--accent-press:#0062cc;--green:#248a3d;--red:#d70015;--orange:#b25000;--shadow:0 16px 44px rgba(0,0,0,.08);--spring:cubic-bezier(.2,.8,.2,1)}*{box-sizing:border-box}html{background:var(--bg)}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}");
   page += F("body:before{content:'';position:fixed;inset:0 0 auto;height:270px;pointer-events:none;background:radial-gradient(ellipse at 76% -20%,rgba(0,122,255,.15),transparent 62%)}main{position:relative;max-width:1080px;margin:0 auto;padding:38px 24px 64px}.hero{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin:0 0 28px;padding:0 4px}.eyebrow{margin:0 0 7px;color:var(--accent);font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}h1{font-size:clamp(30px,4vw,42px);line-height:1.04;letter-spacing:-.035em;margin:0}.sub{color:var(--muted);font-size:15px;line-height:1.45;margin:9px 0 0}.live-pill{display:inline-flex;align-items:center;gap:8px;min-height:34px;padding:7px 12px;border:1px solid var(--line);border-radius:999px;background:var(--surface);backdrop-filter:blur(20px) saturate(160%);-webkit-backdrop-filter:blur(20px) saturate(160%);font-size:13px;font-weight:650;white-space:nowrap}.live-dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 0 4px rgba(36,138,61,.12)}");
-  page += F(".settings-layout{display:grid;grid-template-columns:210px minmax(0,1fr);gap:26px;align-items:start}.settings-sidebar{position:sticky;top:20px;padding:7px;border:1px solid rgba(255,255,255,.62);border-radius:20px;background:var(--surface);box-shadow:var(--shadow);backdrop-filter:blur(28px) saturate(180%);-webkit-backdrop-filter:blur(28px) saturate(180%)}.settings-sidebar strong{display:block;color:var(--muted);font-size:11px;letter-spacing:.08em;padding:13px 13px 8px}.nav-button{display:flex;align-items:center;width:100%;min-height:46px;margin:2px 0;padding:11px 13px;border:0;border-radius:14px;background:transparent;color:var(--ink);text-align:left;font:600 15px/1.2 inherit;cursor:pointer;touch-action:manipulation;transition:transform .12s ease-out,background .28s var(--spring),color .28s var(--spring)}.nav-button:hover{background:rgba(120,120,128,.10)}.nav-button:active{transform:scale(.975)}.nav-button.active{background:var(--accent);color:#fff}.settings-content{min-width:0}.settings-page{display:none}.settings-page.active{display:block;animation:page-in .34s var(--spring)}.section-heading{margin:0 0 16px;font-size:26px;line-height:1.15;letter-spacing:-.025em}.section-kicker{color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.1em;margin-bottom:7px}@keyframes page-in{from{opacity:0;transform:translateY(8px) scale(.995)}to{opacity:1;transform:none}}");
+  page += F(".settings-layout{display:grid;grid-template-columns:210px minmax(0,1fr);gap:26px;align-items:start}.settings-sidebar{position:sticky;top:20px;padding:7px;border:1px solid rgba(255,255,255,.62);border-radius:20px;background:var(--surface);box-shadow:var(--shadow);backdrop-filter:blur(28px) saturate(180%);-webkit-backdrop-filter:blur(28px) saturate(180%)}.settings-sidebar strong{display:block;color:var(--muted);font-size:11px;letter-spacing:.08em;padding:13px 13px 8px}.nav-button{display:flex;align-items:center;width:100%;min-height:46px;margin:2px 0;padding:11px 13px;border:0;border-radius:14px;background:transparent;color:var(--ink);text-align:left;font:600 15px/1.2 inherit;cursor:pointer;touch-action:manipulation;transition:transform .12s ease-out,background .16s ease-out,color .16s ease-out}.nav-button:active{transform:scale(.975)}.nav-button.active{background:var(--accent);color:#fff}.settings-content{min-width:0}.settings-page{display:none}.settings-page.active{display:block}.section-heading{margin:0 0 16px;font-size:26px;line-height:1.15;letter-spacing:-.025em}.section-kicker{color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.1em;margin-bottom:7px}@media(hover:hover) and (pointer:fine){.nav-button:hover{background:rgba(120,120,128,.10)}}");
   page += F(".panel{background:var(--surface);border:1px solid rgba(255,255,255,.68);border-radius:22px;padding:20px;margin:14px 0;box-shadow:0 2px 12px rgba(0,0,0,.045);backdrop-filter:blur(22px) saturate(150%);-webkit-backdrop-filter:blur(22px) saturate(150%)}.grid{display:grid;grid-template-columns:132px 1fr;gap:0}.grid>div{padding:11px 2px;border-bottom:1px solid var(--line)}.grid>div:nth-last-child(-n+2){border-bottom:0}.k{color:var(--muted)}.v{font-weight:600;word-break:break-word}.ok{color:var(--green)}.bad{color:var(--red)}.msg{background:rgba(0,122,255,.09);border-color:rgba(0,122,255,.16);color:#064e9d}.err{background:rgba(255,59,48,.09);border-color:rgba(255,59,48,.16);color:var(--red)}");
-  page += F("label{display:block;font-weight:600;margin:16px 0 7px}input,select{width:100%;min-height:48px;border:1px solid var(--line);border-radius:12px;padding:11px 13px;font:400 16px/1.2 inherit;color:var(--ink);background:var(--raised);outline:none;transition:border-color .16s ease,box-shadow .16s ease}input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(0,122,255,.16)}button{min-height:44px;border:0;border-radius:12px;background:var(--accent);color:#fff;font:650 15px/1.2 inherit;padding:11px 16px;margin-top:14px;cursor:pointer;touch-action:manipulation;transition:transform .1s ease-out,background .15s ease,opacity .15s ease}button:hover{background:var(--accent-press)}button:active{transform:scale(.975)}button:disabled{opacity:.45;cursor:not-allowed}button.secondary{background:rgba(120,120,128,.14);color:var(--ink)}.hint{font-size:13px;color:var(--muted);line-height:1.55}.notes{white-space:pre-wrap;font-weight:500;line-height:1.5}hr{border-color:var(--line)!important}");
-  page += F(".dev-title{display:flex;justify-content:space-between;align-items:center;gap:12px}.dev-tag{font:700 11px/1 ui-monospace,'SFMono-Regular',monospace;letter-spacing:.07em;color:var(--accent)}.toggle{display:flex;align-items:center;gap:10px;min-height:44px;font-weight:600}.toggle input{width:20px;min-height:20px;accent-color:var(--accent);box-shadow:none}.tft-shell{margin-top:18px;padding:16px;border-radius:28px;background:#18181a;box-shadow:inset 0 0 0 1px #39393d,inset 0 0 0 7px #08080a,0 20px 46px rgba(0,0,0,.28)}.tft-glass{position:relative;overflow:hidden;width:100%;aspect-ratio:4/3;background:#000;border-radius:6px}.tft-glass:after{content:'';pointer-events:none;position:absolute;inset:0;background:linear-gradient(115deg,rgba(255,255,255,.045),transparent 28%,transparent 72%,rgba(255,255,255,.018));mix-blend-mode:screen}.tft-canvas{display:block;width:100%;height:100%;image-rendering:pixelated}.tft-caption{display:flex;justify-content:space-between;gap:12px;margin-top:12px;color:#8e8e93;font:650 11px/1.4 ui-monospace,'SFMono-Regular',monospace}.tft-caption span:last-child{text-align:right}.tft-live{color:#30d158}.tft-stale{color:#ff9f0a}.progress{margin-top:4px}.progress-track{height:8px;background:rgba(120,120,128,.18);border-radius:999px;overflow:hidden}.progress-bar{height:100%;width:0;background:var(--accent);border-radius:inherit;transition:width .3s var(--spring)}.progress-meta{display:flex;justify-content:space-between;gap:12px;margin-top:8px;font-size:13px;color:var(--muted)}");
-  page += F("@media(prefers-color-scheme:dark){:root{--bg:#000;--surface:rgba(36,36,38,.78);--solid:#1c1c1e;--raised:#2c2c2e;--ink:#f5f5f7;--muted:#a1a1a6;--line:rgba(235,235,245,.12);--accent:#0a84ff;--accent-press:#409cff;--green:#30d158;--red:#ff453a;--orange:#ff9f0a;--shadow:0 18px 54px rgba(0,0,0,.42)}body:before{background:radial-gradient(ellipse at 76% -20%,rgba(10,132,255,.20),transparent 62%)}.settings-sidebar,.panel{border-color:rgba(255,255,255,.08)}.msg{color:#64aaff}.err{color:#ff6961}}@media(max-width:760px){body:before{height:200px}main{padding:22px 14px 44px}.hero{align-items:flex-start;flex-direction:column;gap:15px;margin-bottom:20px}.settings-layout{display:block}.settings-sidebar{top:0;z-index:20;display:flex;gap:4px;overflow-x:auto;margin:0 -4px 18px;padding:6px;border-radius:17px;scrollbar-width:none}.settings-sidebar::-webkit-scrollbar{display:none}.settings-sidebar strong{display:none}.nav-button{width:auto;min-height:42px;flex:0 0 auto;white-space:nowrap;margin:0;padding:10px 13px}.grid{grid-template-columns:112px 1fr}.panel{padding:17px;border-radius:19px}.tft-shell{padding:12px;border-radius:22px}}@media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;animation:none!important;transition-duration:.01ms!important}}@media(prefers-reduced-transparency:reduce){.settings-sidebar,.panel,.live-pill{background:var(--solid);backdrop-filter:none;-webkit-backdrop-filter:none;border-color:var(--line)}}@media(prefers-contrast:more){.settings-sidebar,.panel,input,select{border:1px solid currentColor}.muted,.hint{color:var(--ink)}}</style></head><body><main>");
+  page += F("label{display:block;font-weight:600;margin:16px 0 7px}input,select{width:100%;min-height:48px;border:1px solid var(--line);border-radius:12px;padding:11px 13px;font:400 16px/1.2 inherit;color:var(--ink);background:var(--raised);outline:none;transition:border-color .16s ease-out,box-shadow .16s ease-out}input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(0,122,255,.16)}button{min-height:44px;border:0;border-radius:12px;background:var(--accent);color:#fff;font:650 15px/1.2 inherit;padding:11px 16px;margin-top:14px;cursor:pointer;touch-action:manipulation;transition:transform .1s ease-out,background .15s ease-out,opacity .15s ease-out}button:active{transform:scale(.975)}button:disabled{opacity:.45;cursor:not-allowed}button.secondary{background:rgba(120,120,128,.14);color:var(--ink)}.hint{font-size:13px;color:var(--muted);line-height:1.55}.notes{white-space:pre-wrap;font-weight:500;line-height:1.5}hr{border-color:var(--line)!important}@media(hover:hover) and (pointer:fine){button:hover{background:var(--accent-press)}}");
+  page += F(".dev-title{display:flex;justify-content:space-between;align-items:center;gap:12px}.dev-tag{font:700 11px/1 ui-monospace,'SFMono-Regular',monospace;letter-spacing:.07em;color:var(--accent)}.toggle{display:flex;align-items:center;gap:10px;min-height:44px;font-weight:600}.toggle input{width:20px;min-height:20px;accent-color:var(--accent);box-shadow:none}.tft-shell{margin-top:18px;padding:16px;border-radius:28px;background:#18181a;box-shadow:inset 0 0 0 1px #39393d,inset 0 0 0 7px #08080a,0 20px 46px rgba(0,0,0,.28)}.tft-glass{position:relative;overflow:hidden;width:100%;aspect-ratio:4/3;background:#000;border-radius:6px}.tft-glass:after{content:'';pointer-events:none;position:absolute;inset:0;background:linear-gradient(115deg,rgba(255,255,255,.045),transparent 28%,transparent 72%,rgba(255,255,255,.018));mix-blend-mode:screen}.tft-canvas{display:block;width:100%;height:100%;image-rendering:pixelated}.tft-caption{display:flex;justify-content:space-between;gap:12px;margin-top:12px;color:#8e8e93;font:650 11px/1.4 ui-monospace,'SFMono-Regular',monospace}.tft-caption span:last-child{text-align:right}.tft-live{color:#30d158}.tft-stale{color:#ff9f0a}.progress{margin-top:4px}.progress-track{height:8px;background:rgba(120,120,128,.18);border-radius:999px;overflow:hidden}.progress-bar{height:100%;width:0;background:var(--accent);border-radius:inherit}.progress-meta{display:flex;justify-content:space-between;gap:12px;margin-top:8px;font-size:13px;color:var(--muted)}");
+  page += F("@media(prefers-color-scheme:dark){:root{--bg:#000;--surface:rgba(36,36,38,.78);--solid:#1c1c1e;--raised:#2c2c2e;--ink:#f5f5f7;--muted:#a1a1a6;--line:rgba(235,235,245,.12);--accent:#0a84ff;--accent-press:#409cff;--green:#30d158;--red:#ff453a;--orange:#ff9f0a;--shadow:0 18px 54px rgba(0,0,0,.42)}body:before{background:radial-gradient(ellipse at 76% -20%,rgba(10,132,255,.20),transparent 62%)}.settings-sidebar,.panel{border-color:rgba(255,255,255,.08)}.msg{color:#64aaff}.err{color:#ff6961}}@media(max-width:760px){body:before{height:200px}main{padding:22px 14px 44px}.hero{align-items:flex-start;flex-direction:column;gap:15px;margin-bottom:20px}.settings-layout{display:block}.settings-sidebar{top:0;z-index:20;display:flex;gap:4px;overflow-x:auto;margin:0 -4px 18px;padding:6px;border-radius:17px;scrollbar-width:none}.settings-sidebar::-webkit-scrollbar{display:none}.settings-sidebar strong{display:none}.nav-button{width:auto;min-height:42px;flex:0 0 auto;white-space:nowrap;margin:0;padding:10px 13px}.grid{grid-template-columns:112px 1fr}.panel{padding:17px;border-radius:19px}.tft-shell{padding:12px;border-radius:22px}}@media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;animation:none!important}.nav-button,button,input,select{transition:background-color .16s ease-out,color .16s ease-out,border-color .16s ease-out,opacity .16s ease-out!important}}@media(prefers-reduced-transparency:reduce){.settings-sidebar,.panel,.live-pill{background:var(--solid);backdrop-filter:none;-webkit-backdrop-filter:none;border-color:var(--line)}}@media(prefers-contrast:more){.settings-sidebar,.panel,input,select{border:1px solid currentColor}.muted,.hint{color:var(--ink)}}</style></head><body><main>");
   page += F("<header class=\"hero\"><div><p class=\"eyebrow\">AMap · ESP32</p><h1>设备设置</h1><p class=\"sub\">连接、显示和固件，一处完成。</p></div><div class=\"live-pill\" role=\"status\"><span id=\"deviceStatusDot\" class=\"live-dot\"></span><span id=\"deviceStatusLabel\">");
   page += isConnected() ? F("Wi-Fi 已连接") : (isConfigPortalActive() ? F("配网热点已开启") : F("等待连接"));
   page += F("</span></div></header>");
@@ -846,6 +867,14 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += F("<p class=\"hint\">保存后，ESP32 会在尝试连接新 Wi-Fi 时保留配网热点；STA 成功连上后，热点会自动关闭。</p>");
   page += F("</section>");
 
+  page += F("<section class=\"panel\"><form method=\"post\" action=\"/weather/save\">");
+  page += F("<h2 style=\"font-size:18px;margin:0 0 8px\">天气城市</h2>");
+  page += F("<label for=\"weatherCity\">城市名称</label><input id=\"weatherCity\" name=\"weatherCity\" maxlength=\"72\" required value=\"");
+  page += htmlEscape(weatherService == nullptr ? String() : weatherService->cityName());
+  page += F("\" placeholder=\"例如：深圳、上海、Hong Kong\">");
+  page += F("<button type=\"submit\">保存并获取天气</button></form>");
+  page += F("<p class=\"hint\">天气应用使用城市名称定位并保存坐标。首次设置、城市变更或网络失败后会在后台获取；不会阻塞导航与触摸操作。</p></section>");
+
   page += F("<section class=\"panel\"><form method=\"post\" action=\"/clear\">");
   page += F("<button class=\"secondary\" type=\"submit\">清除已保存的 Wi-Fi</button>");
   page += F("</form><p class=\"hint\">清除后将回退到 Config.h 中的兜底 Wi-Fi；如果没有可用兜底配置，则保持在 AP 配网模式。</p></section>");
@@ -867,7 +896,7 @@ String NetworkManager::buildStatusPage(const String& message) const {
   page += hardwareSettings.invertColors ? F(" checked") : F("");
   page += F(">启用屏幕反色</label>");
   page += F("<button type=\"submit\">保存显示硬件并重启</button></form>");
-  page += F("<p class=\"hint\">启用触摸后：左右滑切换自动、导航、音乐和状态页，上滑进入状态页，下滑或长按返回自动模式。屏幕反色用于修正不同面板批次出现的颜色颠倒；这些设置都在开机阶段初始化，因此修改后必须重启。无触摸屏请关闭触摸，以免占用 GPIO8、GPIO9、GPIO17、GPIO18。</p></section>");
+  page += F("<p class=\"hint\">启用触摸后：左右滑切换桌面应用；从屏幕底部上划回到桌面；仅从屏幕顶部下拉打开通知中心。自动模式作为桌面独立应用启动。屏幕反色用于修正不同面板批次出现的颜色颠倒；这些设置都在开机阶段初始化，因此修改后必须重启。无触摸屏请关闭触摸，以免占用 GPIO8、GPIO9、GPIO17、GPIO18。</p></section>");
 
   page += F("<section class=\"panel\"><h2 style=\"font-size:18px;margin:0 0 8px\">BLE 管理</h2>");
   page += F("<form method=\"post\" action=\"/ble/clear\" onsubmit=\"return confirm('清除全部 BLE 配对记录并断开当前连接？')\">");
@@ -1113,6 +1142,7 @@ String NetworkManager::buildNavigationJson() const {
   json += ",\"playing\":";
   json += state.music.playing ? "true" : "false";
   json += ",\"source\":\"" + jsonEscape(state.music.source) + "\"";
+  json += ",\"sourceName\":\"" + jsonEscape(state.music.sourceName) + "\"";
   json += ",\"songId\":" + String(static_cast<long long>(state.music.songId));
   json += ",\"title\":\"" + jsonEscape(state.music.title) + "\"";
   json += ",\"artist\":\"" + jsonEscape(state.music.artist) + "\"";

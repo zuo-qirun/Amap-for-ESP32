@@ -1,7 +1,11 @@
 package com.zuoqirun.amapesp32forwarder;
 
 import android.content.ComponentName;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
+import android.media.MediaMetadata;
 import android.media.session.MediaController;
+import android.media.session.MediaSession;
 import android.media.session.MediaSessionManager;
 import android.media.session.PlaybackState;
 import android.os.Handler;
@@ -11,28 +15,30 @@ import android.service.notification.StatusBarNotification;
 import android.util.Log;
 
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 public final class MusicNotificationListener extends NotificationListenerService {
-    static final String NETEASE_PACKAGE = "com.netease.cloudmusic";
-    private static final String TAG = "NetEaseMusic";
+    private static final String TAG = "MusicSession";
     private static volatile MusicNotificationListener activeInstance;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Map<MediaSession.Token, MediaController> observedControllers = new HashMap<>();
     private MediaSessionManager sessionManager;
     private MediaController controller;
 
     private final MediaSessionManager.OnActiveSessionsChangedListener sessionsChanged =
-            this::selectController;
-    private final MediaController.Callback controllerCallback = new MediaController.Callback() {
+            this::onSessionsChanged;
+    private final MediaController.Callback sessionCallback = new MediaController.Callback() {
         @Override
-        public void onMetadataChanged(android.media.MediaMetadata metadata) {
-            publish();
+        public void onMetadataChanged(MediaMetadata metadata) {
+            refreshSessions();
         }
 
         @Override
         public void onPlaybackStateChanged(PlaybackState state) {
-            publish();
+            refreshSessions();
         }
 
         @Override
@@ -71,9 +77,21 @@ public final class MusicNotificationListener extends NotificationListenerService
 
     @Override
     public void onNotificationPosted(StatusBarNotification sbn) {
-        if (sbn != null && NETEASE_PACKAGE.equals(sbn.getPackageName()) && controller == null) {
+        if (AppSettings.isPhoneEnabled(this) && AppSettings.arePhoneNotificationsEnabled(this)
+                && PhoneStateStore.updateNotification(sbn)) {
+            ForwarderService.requestPhoneRefresh();
+        }
+        if (sbn != null && (controller == null || MusicAppRegistry.isKnown(sbn.getPackageName()))) {
             refreshSessions();
         }
+    }
+
+    @Override
+    public void onNotificationRemoved(StatusBarNotification sbn) {
+        if (AppSettings.isPhoneEnabled(this) && PhoneStateStore.clearNotification(sbn)) {
+            ForwarderService.requestPhoneRefresh();
+        }
+        super.onNotificationRemoved(sbn);
     }
 
     @Override
@@ -94,13 +112,26 @@ public final class MusicNotificationListener extends NotificationListenerService
         return true;
     }
 
+    static boolean refreshMediaState() {
+        MusicNotificationListener instance = activeInstance;
+        if (instance == null) {
+            return false;
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            instance.refreshSessions();
+        } else {
+            instance.handler.post(instance::refreshSessions);
+        }
+        return true;
+    }
+
     private void applyMediaControl(String action) {
         if (controller == null) {
             refreshSessions();
         }
         MediaController current = controller;
         if (current == null) {
-            AppSettings.noteError(this, "未找到网易云音乐的活动播放会话");
+            AppSettings.noteError(this, "未找到可控制的活动音乐播放会话");
             return;
         }
         MediaController.TransportControls controls = current.getTransportControls();
@@ -136,6 +167,11 @@ public final class MusicNotificationListener extends NotificationListenerService
         } catch (Throwable error) {
             Log.w(TAG, "Unable to read active media sessions", error);
         }
+        onSessionsChanged(sessions);
+    }
+
+    private void onSessionsChanged(List<MediaController> sessions) {
+        syncObservedSessions(sessions);
         selectController(sessions);
     }
 
@@ -144,29 +180,28 @@ public final class MusicNotificationListener extends NotificationListenerService
         int bestScore = Integer.MIN_VALUE;
         if (sessions != null) {
             for (MediaController candidate : sessions) {
-                if (candidate == null || !NETEASE_PACKAGE.equals(candidate.getPackageName())) {
+                if (candidate == null || getPackageName().equals(candidate.getPackageName())
+                        || !isUsableSession(candidate)) {
                     continue;
                 }
-                int score = playbackScore(candidate.getPlaybackState());
+                MediaMetadata metadata = candidate.getMetadata();
+                PlaybackState state = candidate.getPlaybackState();
+                MusicAppRegistry.App app = MusicAppRegistry.resolve(
+                        candidate.getPackageName(), applicationLabel(candidate.getPackageName()));
+                int score = MusicAppRegistry.selectionScore(
+                        playbackRank(state), hasMetadata(metadata), supportsControls(state),
+                        app.known, sameSession(controller, candidate));
                 if (score > bestScore) {
                     best = candidate;
                     bestScore = score;
                 }
             }
         }
-        if (sameSession(controller, best)) {
-            publish();
-            return;
-        }
-        if (controller != null) {
-            controller.unregisterCallback(controllerCallback);
-        }
         controller = best;
         if (controller == null) {
             MusicStateStore.clear();
             return;
         }
-        controller.registerCallback(controllerCallback, handler);
         publish();
     }
 
@@ -176,7 +211,11 @@ public final class MusicNotificationListener extends NotificationListenerService
             MusicStateStore.clear();
             return;
         }
-        MusicStateStore.update(this, current.getMetadata(), current.getPlaybackState());
+        String packageName = current.getPackageName();
+        MusicAppRegistry.App app = MusicAppRegistry.resolve(
+                packageName, applicationLabel(packageName));
+        MusicStateStore.update(this, app.sourceId, app.displayName,
+                current.getMetadata(), current.getPlaybackState());
     }
 
     private void stopListening() {
@@ -186,11 +225,36 @@ public final class MusicNotificationListener extends NotificationListenerService
             }
         } catch (Throwable ignored) {
         }
-        if (controller != null) {
-            controller.unregisterCallback(controllerCallback);
-            controller = null;
+        for (MediaController observed : observedControllers.values()) {
+            observed.unregisterCallback(sessionCallback);
         }
+        observedControllers.clear();
+        controller = null;
         MusicStateStore.clear();
+    }
+
+    private void syncObservedSessions(List<MediaController> sessions) {
+        Map<MediaSession.Token, MediaController> next = new HashMap<>();
+        if (sessions != null) {
+            for (MediaController candidate : sessions) {
+                if (candidate == null || getPackageName().equals(candidate.getPackageName())) {
+                    continue;
+                }
+                MediaSession.Token token = candidate.getSessionToken();
+                next.put(token, candidate);
+                if (!observedControllers.containsKey(token)) {
+                    candidate.registerCallback(sessionCallback, handler);
+                }
+            }
+        }
+        for (Map.Entry<MediaSession.Token, MediaController> entry
+                : observedControllers.entrySet()) {
+            if (!next.containsKey(entry.getKey())) {
+                entry.getValue().unregisterCallback(sessionCallback);
+            }
+        }
+        observedControllers.clear();
+        observedControllers.putAll(next);
     }
 
     private static boolean sameSession(MediaController left, MediaController right) {
@@ -198,19 +262,64 @@ public final class MusicNotificationListener extends NotificationListenerService
                 && left.getSessionToken().equals(right.getSessionToken());
     }
 
-    private static int playbackScore(PlaybackState state) {
+    private static int playbackRank(PlaybackState state) {
         if (state == null) {
             return 0;
         }
-        if (state.getState() == PlaybackState.STATE_PLAYING) {
-            return 100;
+        switch (state.getState()) {
+            case PlaybackState.STATE_PLAYING:
+            case PlaybackState.STATE_FAST_FORWARDING:
+            case PlaybackState.STATE_REWINDING:
+                return 10_000;
+            case PlaybackState.STATE_BUFFERING:
+                return 9_000;
+            case PlaybackState.STATE_CONNECTING:
+                return 8_000;
+            case PlaybackState.STATE_PAUSED:
+                return 5_000;
+            case PlaybackState.STATE_SKIPPING_TO_NEXT:
+            case PlaybackState.STATE_SKIPPING_TO_PREVIOUS:
+            case PlaybackState.STATE_SKIPPING_TO_QUEUE_ITEM:
+                return 7_000;
+            default:
+                return 0;
         }
-        if (state.getState() == PlaybackState.STATE_BUFFERING) {
-            return 80;
+    }
+
+    private static boolean isUsableSession(MediaController candidate) {
+        PlaybackState state = candidate.getPlaybackState();
+        int stateValue = state == null ? PlaybackState.STATE_NONE : state.getState();
+        return playbackRank(state) > 0 || hasMetadata(candidate.getMetadata())
+                && stateValue != PlaybackState.STATE_STOPPED
+                && stateValue != PlaybackState.STATE_ERROR;
+    }
+
+    private static boolean hasMetadata(MediaMetadata metadata) {
+        return metadata != null && (!empty(metadata.getString(MediaMetadata.METADATA_KEY_TITLE))
+                || !empty(metadata.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE)));
+    }
+
+    private static boolean supportsControls(PlaybackState state) {
+        if (state == null) return false;
+        long actions = state.getActions();
+        long transportActions = PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE
+                | PlaybackState.ACTION_PLAY_PAUSE | PlaybackState.ACTION_SKIP_TO_NEXT
+                | PlaybackState.ACTION_SKIP_TO_PREVIOUS;
+        return (actions & transportActions) != 0;
+    }
+
+    private String applicationLabel(String packageName) {
+        try {
+            PackageManager manager = getPackageManager();
+            ApplicationInfo info = manager.getApplicationInfo(packageName, 0);
+            CharSequence label = manager.getApplicationLabel(info);
+            return label == null ? "" : label.toString().trim();
+        } catch (PackageManager.NameNotFoundException | SecurityException ignored) {
+            return "";
         }
-        if (state.getState() == PlaybackState.STATE_PAUSED) {
-            return 60;
-        }
-        return 10;
+    }
+
+    private static boolean empty(String value) {
+        return value == null || value.trim().isEmpty();
     }
 }

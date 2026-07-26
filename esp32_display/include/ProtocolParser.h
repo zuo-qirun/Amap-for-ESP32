@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include "NavState.h"
 
 class ProtocolParser {
@@ -10,4 +11,5 @@ public:
 private:
   static String readText(const char* value, const char* fallback = "");
   static String limitText(const String& value, size_t maxBytes);
+  static void parsePhone(JsonObject phone, PhoneState& target);
 };

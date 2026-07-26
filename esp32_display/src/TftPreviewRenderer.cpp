@@ -112,7 +112,7 @@ bool TftPreviewRenderer::sendBmp(WebServer& server, const NavState& state, bool 
   }
 
   TftFrameRenderer::render(canvas, font, state, wifiConnected, false, "", AMAP_UDP_PORT,
-                           silenceMs);
+                           silenceMs, WeatherState{});
 
   uint8_t header[kBmpHeaderBytes] = {};
   header[0] = 'B';

@@ -47,7 +47,9 @@ void DisplayRenderer::renderMusic(const MusicState& music) {
   const bool tall = height >= 96;
 
   setTextFont();
-  drawClipped(0, 12, width, music.title.isEmpty() ? "网易云音乐" : music.title);
+  drawClipped(0, 12, width, music.title.isEmpty()
+      ? (music.sourceName.isEmpty() ? "音乐播放器" : music.sourceName)
+      : music.title);
   setSmallFont();
   drawClipped(0, 25, width, (music.playing ? "播放中 " : "已暂停 ") + music.artist);
 

@@ -7,6 +7,7 @@
 #include "NavState.h"
 #include "MediaControlCommand.h"
 #include "TftViewMode.h"
+#include "WeatherService.h"
 
 // Draws the logical 320x240 frame onto any Adafruit_GFX-compatible target.
 // The hardware display and browser preview deliberately share this renderer.
@@ -15,10 +16,22 @@ public:
   static void render(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                      const NavState& state, bool wifiConnected, bool bleConnected,
                      const String& ip, uint16_t port, unsigned long silenceMs,
+                     const WeatherState& weather,
                      TftViewMode viewMode = TftViewMode::Auto,
-                     MediaControlCommand pressedControl = MediaControlCommand::None);
+                     MediaControlCommand pressedControl = MediaControlCommand::None,
+                     int8_t pressedSettingsRow = -1, bool phoneDetail = false,
+                     uint8_t phoneDetailScroll = 0, bool autoMode = false,
+                     uint8_t settingsPage = 0, int16_t homeScroll = 0,
+                     int16_t musicLyricOffsetY = 0);
+  // The phone information surface is composed independently by TftRenderer so
+  // it can physically follow a downward swipe over whichever app is open.
+  static void renderPhoneSheet(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
+                               const PhoneState& phone, bool wifiConnected,
+                               bool bleConnected, bool detail, uint8_t detailScroll);
   static void drawGestureHint(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                               TftViewMode viewMode);
+  static void drawAppIcon(Adafruit_GFX& display, int16_t left, int16_t top,
+                          int16_t size, const String& app, uint16_t surface);
 
 private:
   static void renderStandby(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
@@ -29,7 +42,23 @@ private:
   static void renderCruise(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                            const NavState& state);
   static void renderMusic(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
-                          const MusicState& music, MediaControlCommand pressedControl);
+                          const MusicState& music, MediaControlCommand pressedControl,
+                          int16_t lyricOffsetY);
+  static void renderHome(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
+                         const NavState& state, bool wifiConnected, bool bleConnected,
+                         const String& ip, uint16_t port, bool autoMode, int16_t homeScroll,
+                         const WeatherState& weather);
+  static void renderWeather(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
+                            const WeatherState& weather, bool wifiConnected);
+  static void renderAutoStatus(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
+                               const NavState& state, bool wifiConnected, bool bleConnected,
+                               const String& ip, uint16_t port, bool autoMode,
+                               bool pressed);
+  static void renderSettings(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
+                             bool wifiConnected, bool bleConnected, const String& ip,
+                             uint16_t port, int8_t pressedRow, uint8_t settingsPage);
+  static void drawPhoneOverlay(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
+                               const PhoneState& phone);
   static void drawMusicOverlay(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                                const MusicState& music);
   static void drawShell(Adafruit_GFX& display);

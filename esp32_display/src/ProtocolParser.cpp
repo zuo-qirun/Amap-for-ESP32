@@ -14,12 +14,19 @@ bool ProtocolParser::parse(const char* payload, size_t length, NavState& target,
   int proto = root["proto"] | 0;
   const char* type = root["type"] | "";
   const bool musicUpdate = strcmp(type, "music_update") == 0;
-  if (proto != 1 || (!musicUpdate && strcmp(type, "nav_state") != 0)) {
+  const bool phoneUpdate = strcmp(type, "phone_update") == 0;
+  if (proto != 1 || (!musicUpdate && !phoneUpdate && strcmp(type, "nav_state") != 0)) {
     error = "unsupported proto/type";
     return false;
   }
 
   target.seq = root["seq"] | target.seq;
+  if (phoneUpdate) {
+    parsePhone(root["phone"].as<JsonObject>(), target.phone);
+    target.lastPacketAt = millis();
+    error = "";
+    return true;
+  }
   if (musicUpdate) {
     target.active = root["active"] | target.active;
     target.mode = limitText(readText(root["mode"] | target.mode.c_str()), 16);
@@ -27,6 +34,8 @@ bool ProtocolParser::parse(const char* payload, size_t length, NavState& target,
     target.music.active = music["active"] | false;
     target.music.playing = music["playing"] | false;
     target.music.source = limitText(readText(music["source"] | ""), 16);
+    target.music.sourceName = limitText(
+        readText(music["sourceName"] | "音乐播放器"), 48);
     target.music.songId = music["songId"] | static_cast<int64_t>(-1);
     target.music.title = limitText(readText(music["title"] | ""), 96);
     target.music.artist = limitText(readText(music["artist"] | ""), 96);
@@ -159,6 +168,8 @@ bool ProtocolParser::parse(const char* payload, size_t length, NavState& target,
   target.music.active = music["active"] | false;
   target.music.playing = music["playing"] | false;
   target.music.source = limitText(readText(music["source"] | ""), 16);
+  target.music.sourceName = limitText(
+      readText(music["sourceName"] | "音乐播放器"), 48);
   target.music.songId = music["songId"] | static_cast<int64_t>(-1);
   target.music.title = limitText(readText(music["title"] | ""), 96);
   target.music.artist = limitText(readText(music["artist"] | ""), 96);
@@ -182,12 +193,49 @@ bool ProtocolParser::parse(const char* payload, size_t length, NavState& target,
   target.music.wordDurationMs = music["wordDurationMs"] | static_cast<int64_t>(0);
   target.music.wordProgressPermille =
       constrain(music["wordProgressPermille"] | 0, 0, 1000);
+  parsePhone(root["phone"].as<JsonObject>(), target.phone);
   target.alert = limitText(readText(root["alert"] | ""), 72);
   target.detail = limitText(readText(root["detail"] | ""), 120);
   target.music.receivedAt = millis();
   target.lastPacketAt = target.music.receivedAt;
   error = "";
   return true;
+}
+
+void ProtocolParser::parsePhone(JsonObject phone, PhoneState& target) {
+  if (phone.isNull()) return;
+  target.enabled = phone["enabled"] | false;
+  JsonObject notification = phone["notification"].as<JsonObject>();
+  target.notification.active = notification["active"] | false;
+  target.notification.kind = limitText(readText(notification["kind"] | ""), 16);
+  target.notification.app = limitText(readText(notification["app"] | ""), 48);
+  target.notification.sender = limitText(readText(notification["sender"] | ""), 128);
+  target.notification.title = limitText(readText(notification["title"] | ""), 192);
+  target.notification.body = limitText(readText(notification["body"] | ""), 1536);
+  target.notification.postedAt = notification["postedAt"] | static_cast<int64_t>(0);
+  target.notification.expiresAt = notification["expiresAt"] | static_cast<int64_t>(0);
+  JsonObject calendar = phone["calendar"].as<JsonObject>();
+  target.calendar.title = limitText(readText(calendar["title"] | ""), 192);
+  target.calendar.location = limitText(readText(calendar["location"] | ""), 192);
+  target.calendar.startAt = calendar["startAt"] | static_cast<int64_t>(-1);
+  target.calendar.endAt = calendar["endAt"] | static_cast<int64_t>(-1);
+  JsonObject weather = phone["weather"].as<JsonObject>();
+  target.weather.provider = limitText(readText(weather["provider"] | ""), 32);
+  target.weather.condition = limitText(readText(weather["condition"] | ""), 96);
+  target.weather.code = weather["code"] | -1;
+  target.weather.temperatureC = weather["temperatureC"] | NAN;
+  target.weather.precipitationMm = weather["precipitationMm"] | NAN;
+  target.weather.aqi = weather["aqi"] | -1;
+  target.weather.alert = limitText(readText(weather["alert"] | ""), 192);
+  target.weather.observedAt = weather["observedAt"] | static_cast<int64_t>(0);
+  target.weather.error = limitText(readText(weather["error"] | ""), 128);
+  JsonObject device = phone["device"].as<JsonObject>();
+  target.device.batteryPercent = device["batteryPercent"] | -1;
+  target.device.charging = device["charging"] | false;
+  target.device.network = limitText(readText(device["network"] | "none"), 16);
+  target.device.bluetoothOn = device["bluetoothOn"] | false;
+  target.device.signalLevel = device["signalLevel"] | -1;
+  target.receivedAt = millis();
 }
 
 String ProtocolParser::readText(const char* value, const char* fallback) {

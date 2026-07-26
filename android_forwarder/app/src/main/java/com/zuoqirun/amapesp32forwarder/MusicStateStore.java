@@ -11,7 +11,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 final class MusicStateStore {
-    private static final String TAG = "NetEaseMusic";
+    private static final String TAG = "MusicSession";
     private static final Object LOCK = new Object();
     private static final ExecutorService LYRIC_EXECUTOR = Executors.newSingleThreadExecutor();
 
@@ -19,6 +19,8 @@ final class MusicStateStore {
     private static NetEaseLyricClient lyricClient;
     private static boolean active;
     private static boolean playing;
+    private static String source = "media";
+    private static String sourceName = "音乐播放器";
     private static String mediaId = "";
     private static String title = "";
     private static String artist = "";
@@ -33,6 +35,8 @@ final class MusicStateStore {
     private static long loadGeneration;
     private static LrcTimeline timeline = LrcTimeline.EMPTY;
     private static boolean lyricLoadFinished;
+    private static boolean trackChangePending;
+    private static long trackChangeStartedAtElapsedMs;
 
     private MusicStateStore() {}
 
@@ -45,7 +49,8 @@ final class MusicStateStore {
         }
     }
 
-    static void update(Context context, MediaMetadata metadata, PlaybackState state) {
+    static void update(Context context, String newSource, String newSourceName,
+                       MediaMetadata metadata, PlaybackState state) {
         initialize(context);
         if (metadata == null && state == null) {
             clear();
@@ -72,13 +77,22 @@ final class MusicStateStore {
         long newPositionTime = state == null || state.getLastPositionUpdateTime() <= 0
                 ? SystemClock.elapsedRealtime() : state.getLastPositionUpdateTime();
         float newSpeed = state == null ? 0f : state.getPlaybackSpeed();
-        String newTrackKey = TextUtils.isEmpty(newMediaId)
-                ? newTitle + "\n" + newArtist + "\n" + newDuration
-                : "media:" + newMediaId + "\n" + newDuration;
+        String normalizedSource = TextUtils.isEmpty(newSource) ? "media" : newSource;
+        String normalizedSourceName = TextUtils.isEmpty(newSourceName)
+                ? "音乐播放器" : newSourceName;
+        String newTrackKey = normalizedSource + "\n" + newTitle + "\n"
+                + newArtist + "\n" + newDuration + "\n" + newMediaId;
         long generationToLoad = -1L;
         synchronized (LOCK) {
+            boolean trackChanged = !TextUtils.equals(trackKey, newTrackKey);
+            if (trackChangePending && (trackChanged
+                    || SystemClock.elapsedRealtime() - trackChangeStartedAtElapsedMs >= 1800L)) {
+                trackChangePending = false;
+            }
             active = newActive;
             playing = newPlaying;
+            source = normalizedSource;
+            sourceName = normalizedSourceName;
             mediaId = safe(newMediaId);
             title = safe(newTitle);
             artist = safe(newArtist);
@@ -87,7 +101,7 @@ final class MusicStateStore {
             basePositionMs = newBasePosition;
             positionUpdatedAtElapsedMs = newPositionTime;
             playbackSpeed = newSpeed;
-            if (!TextUtils.equals(trackKey, newTrackKey)) {
+            if (trackChanged) {
                 trackKey = newTrackKey;
                 songId = -1L;
                 coverUrl = "";
@@ -97,7 +111,11 @@ final class MusicStateStore {
             }
         }
         if (generationToLoad >= 0 && !TextUtils.isEmpty(newTitle)) {
-            scheduleLyricLoad(generationToLoad, newMediaId, newTitle, newArtist, newDuration);
+            // IDs from other providers are not NetEase song IDs. Those tracks are
+            // resolved safely by title, artist and duration instead.
+            String lyricMediaId = "netease".equals(normalizedSource) ? newMediaId : "";
+            scheduleLyricLoad(generationToLoad, lyricMediaId,
+                    newTitle, newArtist, newDuration);
         }
     }
 
@@ -105,6 +123,8 @@ final class MusicStateStore {
         synchronized (LOCK) {
             active = false;
             playing = false;
+            source = "media";
+            sourceName = "音乐播放器";
             mediaId = "";
             title = "";
             artist = "";
@@ -117,37 +137,64 @@ final class MusicStateStore {
             trackKey = "";
             timeline = LrcTimeline.EMPTY;
             lyricLoadFinished = false;
+            trackChangePending = false;
+            trackChangeStartedAtElapsedMs = 0L;
             loadGeneration++;
+        }
+    }
+
+    static void beginMediaControl(String action) {
+        synchronized (LOCK) {
+            long now = SystemClock.elapsedRealtime();
+            if (MediaControlCommand.PLAY_PAUSE.equals(action)) {
+                basePositionMs = currentPositionLocked();
+                positionUpdatedAtElapsedMs = now;
+                playing = !playing;
+                playbackSpeed = playing ? 1f : 0f;
+                return;
+            }
+            if (MediaControlCommand.PREVIOUS.equals(action)
+                    || MediaControlCommand.NEXT.equals(action)) {
+                trackChangePending = true;
+                trackChangeStartedAtElapsedMs = now;
+                basePositionMs = 0L;
+                positionUpdatedAtElapsedMs = now;
+                playing = false;
+                playbackSpeed = 0f;
+                loadGeneration++;
+            }
         }
     }
 
     static void copyInto(Esp32NavState.Music target) {
         synchronized (LOCK) {
-            long position = currentPositionLocked();
+            boolean suppressOldTrack = trackChangePending;
+            long position = suppressOldTrack ? 0L : currentPositionLocked();
             long lyricPosition = Math.max(0L, position
                     + (appContext == null ? 0 : AppSettings.getLyricOffsetMs(appContext)));
             LrcTimeline.At lyrics = timeline.at(lyricPosition);
             target.active = active;
-            target.playing = playing;
-            target.source = "netease";
-            target.songId = songId;
-            target.title = title;
-            target.artist = artist;
-            target.album = album;
-            target.coverUrl = coverUrl;
+            target.playing = !suppressOldTrack && playing;
+            target.source = source;
+            target.sourceName = sourceName;
+            target.songId = suppressOldTrack ? -1L : songId;
+            target.title = suppressOldTrack ? "" : title;
+            target.artist = suppressOldTrack ? "" : artist;
+            target.album = suppressOldTrack ? "" : album;
+            target.coverUrl = suppressOldTrack ? "" : coverUrl;
             target.durationMs = durationMs;
             target.positionMs = position;
-            target.previousLyric = lyrics.previousLyric;
-            target.lyric = lyrics.lyric;
-            target.translatedLyric = lyrics.translatedLyric;
-            target.nextLyric = lyrics.nextLyric;
-            target.highlightedLyric = lyrics.highlightedLyric;
-            target.currentWord = lyrics.currentWord;
-            target.lineStartMs = lyrics.lineStartMs;
-            target.lineDurationMs = lyrics.lineDurationMs;
-            target.wordStartMs = lyrics.wordStartMs;
-            target.wordDurationMs = lyrics.wordDurationMs;
-            target.wordProgressPermille = lyrics.wordProgressPermille;
+            target.previousLyric = suppressOldTrack ? "" : lyrics.previousLyric;
+            target.lyric = suppressOldTrack ? "" : lyrics.lyric;
+            target.translatedLyric = suppressOldTrack ? "" : lyrics.translatedLyric;
+            target.nextLyric = suppressOldTrack ? "" : lyrics.nextLyric;
+            target.highlightedLyric = suppressOldTrack ? "" : lyrics.highlightedLyric;
+            target.currentWord = suppressOldTrack ? "" : lyrics.currentWord;
+            target.lineStartMs = suppressOldTrack ? -1L : lyrics.lineStartMs;
+            target.lineDurationMs = suppressOldTrack ? 0L : lyrics.lineDurationMs;
+            target.wordStartMs = suppressOldTrack ? -1L : lyrics.wordStartMs;
+            target.wordDurationMs = suppressOldTrack ? 0L : lyrics.wordDurationMs;
+            target.wordProgressPermille = suppressOldTrack ? 0 : lyrics.wordProgressPermille;
         }
     }
 
@@ -160,9 +207,9 @@ final class MusicStateStore {
     static String describe() {
         synchronized (LOCK) {
             if (!active) {
-                return "未检测到网易云播放";
+                return "未检测到音乐播放";
             }
-            return (playing ? "播放中 · " : "已暂停 · ") + title
+            return sourceName + " · " + (playing ? "播放中 · " : "已暂停 · ") + title
                     + (artist.isEmpty() ? "" : " / " + artist)
                     + (timeline.isEmpty()
                     ? (lyricLoadFinished ? " · 暂无歌词" : " · 正在获取歌词")

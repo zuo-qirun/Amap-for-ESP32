@@ -34,6 +34,14 @@ final class Esp32Protocol {
         compact.music.highlightedLyric = safe(compact.music.highlightedLyric, 64);
         compact.music.translatedLyric = "";
         compact.music.nextLyric = safe(compact.music.nextLyric, 48);
+        compact.phone.notification.title = safe(compact.phone.notification.title, 48);
+        compact.phone.notification.sender = safe(compact.phone.notification.sender, 32);
+        compact.phone.notification.body = safe(compact.phone.notification.body, 96);
+        compact.phone.calendar.title = safe(compact.phone.calendar.title, 32);
+        compact.phone.calendar.location = safe(compact.phone.calendar.location, 32);
+        compact.phone.weather.condition = safe(compact.phone.weather.condition, 32);
+        compact.phone.weather.alert = safe(compact.phone.weather.alert, 32);
+        compact.phone.weather.error = safe(compact.phone.weather.error, 32);
         trimTmc(compact.tmc, 4);
         payload = toJson(compact, seq).getBytes(StandardCharsets.UTF_8);
         return payload;
@@ -48,6 +56,29 @@ final class Esp32Protocol {
         root.put("active", state.active);
         root.put("mode", safe(state.mode, 16));
         root.put("music", musicJson(state.music));
+        return root.toString().getBytes(StandardCharsets.UTF_8);
+    }
+
+    static byte[] encodePhoneUpdate(Esp32NavState state, long seq) throws Exception {
+        JSONObject root = new JSONObject();
+        root.put("proto", 1);
+        root.put("type", "phone_update");
+        root.put("seq", seq);
+        root.put("ts", System.currentTimeMillis());
+        root.put("phone", phoneJson(state.phone));
+        byte[] payload = root.toString().getBytes(StandardCharsets.UTF_8);
+        if (payload.length <= MAX_UDP_SNAPSHOT_BYTES) return payload;
+
+        Esp32NavState compact = state.copy();
+        compact.phone.notification.title = safe(compact.phone.notification.title, 48);
+        compact.phone.notification.sender = safe(compact.phone.notification.sender, 32);
+        compact.phone.notification.body = safe(compact.phone.notification.body, 96);
+        compact.phone.calendar.title = safe(compact.phone.calendar.title, 32);
+        compact.phone.calendar.location = safe(compact.phone.calendar.location, 32);
+        compact.phone.weather.condition = safe(compact.phone.weather.condition, 32);
+        compact.phone.weather.alert = safe(compact.phone.weather.alert, 32);
+        compact.phone.weather.error = safe(compact.phone.weather.error, 32);
+        root.put("phone", phoneJson(compact.phone));
         return root.toString().getBytes(StandardCharsets.UTF_8);
     }
 
@@ -155,6 +186,7 @@ final class Esp32Protocol {
         root.put("guide", guide);
 
         root.put("music", musicJson(state.music));
+        root.put("phone", phoneJson(state.phone));
         root.put("alert", safe(state.alert, 48));
         root.put("detail", safe(state.detail, 96));
         return root.toString();
@@ -165,6 +197,7 @@ final class Esp32Protocol {
         json.put("active", music.active);
         json.put("playing", music.playing);
         json.put("source", safe(music.source, 16));
+        json.put("sourceName", safe(music.sourceName, 24));
         json.put("songId", music.songId);
         json.put("title", safe(music.title, 48));
         json.put("artist", safe(music.artist, 48));
@@ -183,6 +216,48 @@ final class Esp32Protocol {
         json.put("wordStartMs", music.wordStartMs);
         json.put("wordDurationMs", music.wordDurationMs);
         json.put("wordProgressPermille", music.wordProgressPermille);
+        return json;
+    }
+
+    private static JSONObject phoneJson(Esp32NavState.Phone phone) throws Exception {
+        JSONObject json = new JSONObject();
+        json.put("enabled", phone.enabled);
+        JSONObject notification = new JSONObject();
+        notification.put("active", phone.notification.active);
+        notification.put("kind", safe(phone.notification.kind, 12));
+        notification.put("app", safe(phone.notification.app, 32));
+        notification.put("sender", safe(phone.notification.sender, 64));
+        notification.put("title", safe(phone.notification.title, 96));
+        notification.put("body", safe(phone.notification.body, 512));
+        notification.put("postedAt", phone.notification.postedAt);
+        notification.put("expiresAt", phone.notification.expiresAt);
+        json.put("notification", notification);
+        JSONObject calendar = new JSONObject();
+        calendar.put("title", safe(phone.calendar.title, 96));
+        calendar.put("location", safe(phone.calendar.location, 96));
+        calendar.put("startAt", phone.calendar.startAt);
+        calendar.put("endAt", phone.calendar.endAt);
+        json.put("calendar", calendar);
+        JSONObject weather = new JSONObject();
+        weather.put("provider", safe(phone.weather.provider, 20));
+        weather.put("condition", safe(phone.weather.condition, 48));
+        weather.put("code", phone.weather.code);
+        weather.put("temperatureC", Double.isNaN(phone.weather.temperatureC)
+                ? JSONObject.NULL : phone.weather.temperatureC);
+        weather.put("precipitationMm", Double.isNaN(phone.weather.precipitationMm)
+                ? JSONObject.NULL : phone.weather.precipitationMm);
+        weather.put("aqi", phone.weather.aqi);
+        weather.put("alert", safe(phone.weather.alert, 96));
+        weather.put("observedAt", phone.weather.observedAt);
+        weather.put("error", safe(phone.weather.error, 64));
+        json.put("weather", weather);
+        JSONObject device = new JSONObject();
+        device.put("batteryPercent", phone.device.batteryPercent);
+        device.put("charging", phone.device.charging);
+        device.put("network", safe(phone.device.network, 16));
+        device.put("bluetoothOn", phone.device.bluetoothOn);
+        device.put("signalLevel", phone.device.signalLevel);
+        json.put("device", device);
         return json;
     }
 

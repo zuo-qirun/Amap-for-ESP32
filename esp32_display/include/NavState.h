@@ -86,6 +86,7 @@ struct MusicState {
   bool active = false;
   bool playing = false;
   String source;
+  String sourceName;
   int64_t songId = -1;
   String title;
   String artist;
@@ -110,6 +111,53 @@ struct MusicState {
   int wordProgressAt(unsigned long now) const;
 };
 
+struct PhoneNotificationState {
+  bool active = false;
+  String kind;
+  String app;
+  String sender;
+  String title;
+  String body;
+  int64_t postedAt = 0;
+  int64_t expiresAt = 0;
+};
+
+struct PhoneCalendarState {
+  String title;
+  String location;
+  int64_t startAt = -1;
+  int64_t endAt = -1;
+};
+
+struct PhoneWeatherState {
+  String provider;
+  String condition;
+  int code = -1;
+  float temperatureC = NAN;
+  float precipitationMm = NAN;
+  int aqi = -1;
+  String alert;
+  int64_t observedAt = 0;
+  String error;
+};
+
+struct PhoneDeviceState {
+  int batteryPercent = -1;
+  bool charging = false;
+  String network = "none";
+  bool bluetoothOn = false;
+  int signalLevel = -1;
+};
+
+struct PhoneState {
+  bool enabled = false;
+  PhoneNotificationState notification;
+  PhoneCalendarState calendar;
+  PhoneWeatherState weather;
+  PhoneDeviceState device;
+  unsigned long receivedAt = 0;
+};
+
 struct NavState {
   static const uint8_t MAX_LIGHTS = 4;
 
@@ -129,6 +177,7 @@ struct NavState {
   RoadInfoState roadInfo;
   GuideInfoState guide;
   MusicState music;
+  PhoneState phone;
   String alert;
   String detail;
   uint32_t seq = 0;

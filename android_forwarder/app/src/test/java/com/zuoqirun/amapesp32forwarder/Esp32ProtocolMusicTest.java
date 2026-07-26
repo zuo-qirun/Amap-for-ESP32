@@ -14,6 +14,8 @@ public class Esp32ProtocolMusicTest {
         Esp32NavState state = new Esp32NavState();
         state.music.active = true;
         state.music.playing = true;
+        state.music.source = "qqmusic";
+        state.music.sourceName = "QQ 音乐";
         state.music.songId = 186016L;
         state.music.title = "晴天";
         state.music.artist = "周杰伦";
@@ -32,6 +34,8 @@ public class Esp32ProtocolMusicTest {
         JSONObject root = new JSONObject(Esp32Protocol.toJson(state, 7L));
         JSONObject music = root.getJSONObject("music");
         assertTrue(music.getBoolean("active"));
+        assertEquals("qqmusic", music.getString("source"));
+        assertEquals("QQ 音乐", music.getString("sourceName"));
         assertEquals(186016L, music.getLong("songId"));
         assertEquals("晴天", music.getString("title"));
         assertEquals(56_410L, music.getLong("positionMs"));

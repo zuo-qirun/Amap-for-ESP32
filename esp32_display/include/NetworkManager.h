@@ -13,11 +13,13 @@
 #include "OtaManager.h"
 #include "TftPreviewRenderer.h"
 
+class WeatherService;
+
 class NetworkManager {
 public:
   NetworkManager();
   void begin(OtaManager* ota, const NavState* navigation = nullptr,
-             BleReceiver* ble = nullptr);
+             BleReceiver* ble = nullptr, WeatherService* weather = nullptr);
   void update();
   int readPacket(char* buffer, size_t capacity, IPAddress& remoteIp, uint16_t& remotePort);
   void rememberControlPeer(const IPAddress& remoteIp, uint16_t remotePort);
@@ -42,6 +44,7 @@ private:
   IPAddress portalSubnet;
   OtaManager* otaManager = nullptr;
   BleReceiver* bleReceiver = nullptr;
+  WeatherService* weatherService = nullptr;
   const NavState* navigationState = nullptr;
   TftPreviewRenderer tftPreview;
   String activeSsid;
@@ -86,6 +89,7 @@ private:
   void configureRoutes();
   void handleRoot();
   void handleSave();
+  void handleWeatherSave();
   void handleClear();
   void handleOtaCheck();
   void handleOtaUpgrade();

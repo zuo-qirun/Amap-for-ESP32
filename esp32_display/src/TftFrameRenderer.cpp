@@ -4,8 +4,15 @@
 
 #include "Config.h"
 #include "AlbumArtCache.h"
+#include "DisplayPreferences.h"
 #include "NavigationIcons.h"
 #include "NaviLinkIcons.h"
+
+// U8g2_for_Adafruit_GFX exposes a compact font declaration header, while the
+// linked U8g2 archive also provides these larger CJK/Hangul font blocks.
+extern const uint8_t u8g2_font_unifont_t_gb2312[];
+extern const uint8_t u8g2_font_unifont_t_korean1[];
+extern const uint8_t u8g2_font_unifont_t_korean2[];
 
 namespace {
 constexpr uint16_t kCanvas = 0x0000;
@@ -23,6 +30,29 @@ constexpr uint16_t kDivider = 0x39E7;
 constexpr uint16_t kRed = 0xF986;           // Navi-Link #FF3333
 constexpr uint16_t kYellow = 0xCCC0;        // Navi-Link #CC9900
 constexpr uint16_t kGreen = 0x366B;         // Navi-Link #34C759
+constexpr uint16_t kPurple = 0x715C;        // soft violet for personal apps
+constexpr uint16_t kOrange = 0xFC40;        // warm, high-visibility utility accent
+
+int utf8CodePointCount(const String& text) {
+  int count = 0;
+  for (size_t index = 0; index < text.length(); ++index) {
+    if ((static_cast<uint8_t>(text[index]) & 0xC0U) != 0x80U) ++count;
+  }
+  return count;
+}
+
+int utf8ByteOffset(const String& text, int codePoints) {
+  int seen = 0;
+  size_t index = 0;
+  while (index < text.length() && seen < codePoints) {
+    if ((static_cast<uint8_t>(text[index]) & 0xC0U) != 0x80U) ++seen;
+    ++index;
+    while (index < text.length() && (static_cast<uint8_t>(text[index]) & 0xC0U) == 0x80U) {
+      ++index;
+    }
+  }
+  return static_cast<int>(index);
+}
 
 uint16_t lightColor(int status) {
   return status == 1 ? kRed : (status == 4 ? kGreen : kYellow);
@@ -50,6 +80,16 @@ uint16_t musicAccent(int64_t songId) {
   };
   const uint64_t value = songId < 0 ? 0 : static_cast<uint64_t>(songId);
   return palette[value % (sizeof(palette) / sizeof(palette[0]))];
+}
+
+String airQualityLabel(int value) {
+  if (value < 0) return "等待更新";
+  if (value <= 50) return "优";
+  if (value <= 100) return "良";
+  if (value <= 150) return "敏感人群注意";
+  if (value <= 200) return "不健康";
+  if (value <= 300) return "很不健康";
+  return "危险";
 }
 
 size_t utf8CharacterBytes(uint8_t firstByte) {
@@ -83,19 +123,24 @@ bool decodeUtf8(const String& text, size_t offset, uint16_t& codepoint, size_t& 
   return true;
 }
 
-const uint8_t* fallbackFont(const uint8_t* primary) {
-  return primary == u8g2_font_wqy16_t_gb2312
-             ? u8g2_font_b16_t_japanese3
-             : u8g2_font_b12_t_japanese3;
-}
-
 int16_t glyphWidth(U8G2_FOR_ADAFRUIT_GFX& font, const uint8_t* primary,
                    uint16_t& codepoint) {
   font.setFont(primary);
   int16_t width = u8g2_GetGlyphWidth(&font.u8g2, codepoint);
   if (width == 0) {
-    font.setFont(fallbackFont(primary));
-    width = u8g2_GetGlyphWidth(&font.u8g2, codepoint);
+    // WQY covers the primary Chinese UI. These fallbacks add remaining CJK
+    // glyphs and both Hangul blocks without silently dropping weather names.
+    const uint8_t* const fallbacks[] = {
+        u8g2_font_unifont_t_gb2312,
+        u8g2_font_unifont_t_korean1,
+        u8g2_font_unifont_t_korean2,
+        u8g2_font_b16_t_japanese3,
+    };
+    for (const uint8_t* fallback : fallbacks) {
+      font.setFont(fallback);
+      width = u8g2_GetGlyphWidth(&font.u8g2, codepoint);
+      if (width != 0) break;
+    }
   }
   if (width == 0) {
     codepoint = 0x25A1;  // visible replacement box instead of a silent gap
@@ -127,6 +172,10 @@ int16_t textWidth(U8G2_FOR_ADAFRUIT_GFX& font, const String& text) {
 int16_t drawTextWithFallback(U8G2_FOR_ADAFRUIT_GFX& font, int16_t x, int16_t baseline,
                              const String& text, uint16_t color) {
   const uint8_t* primary = font.u8g2.font;
+  // Keep glyphs transparent even after a fallback font or clipping canvas has
+  // changed the U8g2 state; otherwise its default black background leaks into
+  // colored cards and buttons.
+  font.setFontMode(1);
   font.setForegroundColor(color);
   int16_t cursor = x;
   for (size_t offset = 0; offset < text.length();) {
@@ -250,15 +299,40 @@ void drawAlphaBitmap(Adafruit_GFX& display, const NaviLinkIcons::Bitmap& bitmap,
 void TftFrameRenderer::render(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                                const NavState& state, bool wifiConnected, bool bleConnected,
                                const String& ip, uint16_t port, unsigned long silenceMs,
-                               TftViewMode viewMode, MediaControlCommand pressedControl) {
+                               const WeatherState& weather,
+                                TftViewMode viewMode, MediaControlCommand pressedControl,
+                                 int8_t pressedSettingsRow, bool phoneDetail,
+                                 uint8_t phoneDetailScroll, bool autoMode,
+                                 uint8_t settingsPage, int16_t homeScroll,
+                                 int16_t musicLyricOffsetY) {
   if (state.music.active) {
     AlbumArtCache::instance().request(state.music.coverUrl, wifiConnected);
   }
   const bool connected = wifiConnected || bleConnected;
   const bool fresh = connected && silenceMs <= AMAP_STANDBY_MS;
-  if (viewMode == TftViewMode::Status) {
-    renderStandby(display, font, "设备状态", "左右滑切换 · 下滑返回自动",
-                  wifiConnected, bleConnected, ip, port);
+  if (viewMode == TftViewMode::Home) {
+    renderHome(display, font, state, wifiConnected, bleConnected, ip, port, autoMode,
+               homeScroll, weather);
+    return;
+  }
+  if (viewMode == TftViewMode::Weather) {
+    renderWeather(display, font, weather, wifiConnected);
+    return;
+  }
+  if (viewMode == TftViewMode::AutoStatus) {
+    renderAutoStatus(display, font, state, wifiConnected, bleConnected, ip, port, autoMode,
+                     pressedSettingsRow == 0);
+    return;
+  }
+  if (viewMode == TftViewMode::Settings) {
+    renderSettings(display, font, wifiConnected, bleConnected, ip, port, pressedSettingsRow,
+                   settingsPage);
+    return;
+  }
+  if (viewMode == TftViewMode::Auto) {
+    // TftRenderer normally resolves automatic mode before it reaches this
+    // function. Keeping a useful fallback here makes preview rendering safe.
+    renderHome(display, font, state, wifiConnected, bleConnected, ip, port, true, 0, weather);
     return;
   }
   if (viewMode == TftViewMode::Navigation) {
@@ -274,10 +348,10 @@ void TftFrameRenderer::render(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font
   }
   if (viewMode == TftViewMode::Music) {
     if (!fresh || !state.music.active) {
-      renderStandby(display, font, "暂无音乐数据", "打开网易云音乐后自动更新",
+      renderStandby(display, font, "暂无音乐数据", "打开任意音乐播放器后自动更新",
                     wifiConnected, bleConnected, ip, port);
     } else {
-      renderMusic(display, font, state.music, pressedControl);
+      renderMusic(display, font, state.music, pressedControl, musicLyricOffsetY);
     }
     return;
   }
@@ -291,9 +365,9 @@ void TftFrameRenderer::render(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font
     renderStandby(display, font, "手机数据已暂停", "正在等待新的 UDP / BLE 数据",
                   wifiConnected, bleConnected, ip, port);
   } else if (!state.active && state.music.active) {
-    renderMusic(display, font, state.music, pressedControl);
+    renderMusic(display, font, state.music, pressedControl, musicLyricOffsetY);
   } else if (!state.active) {
-    renderStandby(display, font, "等待导航或音乐", "打开高德导航或网易云音乐",
+    renderStandby(display, font, "等待导航或音乐", "打开高德导航或音乐播放器",
                   wifiConnected, bleConnected, ip, port);
   } else if (state.mode == "cruise") {
     renderCruise(display, font, state);
@@ -306,35 +380,404 @@ void TftFrameRenderer::render(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font
       drawMusicOverlay(display, font, state.music);
     }
   }
+  if (state.phone.notification.active) drawPhoneOverlay(display, font, state.phone);
+}
+
+void TftFrameRenderer::renderHome(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
+                                   const NavState& state, bool wifiConnected, bool bleConnected,
+                                   const String& ip, uint16_t port, bool autoMode,
+                                   int16_t homeScroll, const WeatherState& weather) {
+  drawShell(display);
+  const bool connected = wifiConnected || bleConnected;
+  struct AppTile {
+    int16_t left;
+    int16_t top;
+    const char* app;
+    const char* title;
+    String detail;
+    uint16_t surface;
+  };
+  const String navDetail = state.active ?
+      (state.turn.distanceText.isEmpty() ? "正在导航" : state.turn.distanceText) : "打开导航";
+  const String musicDetail = state.music.active ?
+      (state.music.title.isEmpty() ? "正在播放" : state.music.title) : "打开音乐";
+  const String autoDetail = autoMode ? "服务已开启" : "设备状态";
+  const String weatherDetail = !weather.configured ? "在配置页设城市"
+      : weather.loading ? "正在更新"
+      : weather.valid ? String(weather.temperatureC, 0) + "° · " + weather.condition
+      : "等待天气数据";
+  const AppTile tiles[] = {
+      {12, 55, "map", "导航", navDetail, kExitGreen},
+      {166, 55, "music", "音乐", musicDetail, kPurple},
+      {12, 128, "weather", "天气", weatherDetail, kOrange},
+      {166, 128, "auto", "自动", autoDetail, kAccent},
+      {12, 201, "settings", "设置", "连接与状态", kCapsule},
+      {166, 201, "display", "显示", "亮度与夜间", kPurple},
+  };
+  for (const AppTile& tile : tiles) {
+    const int16_t top = tile.top - homeScroll;
+    display.fillRoundRect(tile.left, top, 142, 62, 14, kInfoSurface);
+    drawAppIcon(display, tile.left + 10, top + 11, 38, tile.app, tile.surface);
+    drawUtf8(font, tile.left + 58, top + 25, tile.title, kText);
+    drawClipped(font, tile.left + 58, top + 46, 72, tile.detail, kTextSoft);
+    if (String(tile.app) == "auto" && autoMode) {
+      display.fillCircle(tile.left + 132, top + 10, 5, kGreen);
+    }
+  }
+
+  display.fillRoundRect(12, 11, 296, 32, 12, kInfoSurface);
+  display.fillRoundRect(20, 18, 18, 18, 6, kAccent);
+  display.fillTriangle(29, 21, 24, 33, 29, 30, kText);
+  display.fillTriangle(29, 21, 34, 33, 29, 30, kTextSoft);
+  drawUtf8(font, 48, 31, "AMap Drive", kText);
+  drawUtf8(font, 143, 31, "桌面", kMuted);
+  display.fillCircle(287, 27, 4, connected ? kGreen : kYellow);
+  display.fillRoundRect(312, 55, 4, 142, 2, kCapsule);
+  const int16_t thumbTop = 55 + homeScroll * 110 / 33;
+  display.fillRoundRect(312, thumbTop, 4, 32, 2, kAccent);
+}
+
+void TftFrameRenderer::renderWeather(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
+                                     const WeatherState& weather, bool wifiConnected) {
+  drawShell(display);
+  drawAppIcon(display, 14, 13, 38, "weather", kOrange);
+  drawUtf8(font, 63, 30, weather.city.isEmpty() ? "天气" : weather.city, kText);
+  drawUtf8(font, 63, 47, weather.loading ? "正在更新" : "独立应用 · 每 30 分钟刷新", kMuted);
+
+  if (!weather.configured) {
+    display.fillRoundRect(12, 65, 296, 92, 15, kInfoSurface);
+    drawUtf8(font, 28, 95, "还没有设置城市", kText);
+    drawClipped(font, 28, 121, 250, "打开设备配置页，填写城市后自动获取天气", kTextSoft);
+    drawUtf8(font, 28, 144, "无需 API Key", kAccent);
+    drawUtf8(font, 16, 226, "底部上划返回桌面", kMuted);
+    return;
+  }
+  if (!weather.valid) {
+    display.fillRoundRect(12, 65, 296, 92, 15, kInfoSurface);
+    drawUtf8(font, 28, 95, wifiConnected ? "等待天气数据" : "等待 Wi-Fi 连接", kText);
+    drawClipped(font, 28, 121, 250,
+                weather.error.isEmpty() ? "后台会自动重试" : weather.error, kTextSoft);
+    drawUtf8(font, 16, 226, "底部上划返回桌面", kMuted);
+    return;
+  }
+
+  const uint16_t atmosphere = weather.isDay ? alphaBlend(kSurface, kOrange, 0x4D)
+                                            : alphaBlend(kSurface, kPurple, 0x57);
+  display.fillRoundRect(12, 62, 296, 93, 16, atmosphere);
+  display.fillCircle(267, 91, 27, weather.isDay ? kOrange : kPurple);
+  if (!weather.isDay) display.fillCircle(278, 81, 23, atmosphere);
+  drawBig(display, 26, 76, isnan(weather.temperatureC) ? "--" : String(weather.temperatureC, 0), 6, kText);
+  drawUtf8(font, 109, 112, "°C", kTextSoft);
+  drawUtf8(font, 27, 134, weather.condition, kText);
+  drawClipped(font, 105, 134, 128,
+              String("体感 ") + String(weather.feelsLikeC, 0) + "°  湿度 " + weather.humidity + "%", kTextSoft);
+  drawUtf8(font, 27, 151, String("风 ") + String(weather.windKph, 0) + " km/h", kTextSoft);
+  const String airDetail = weather.airQualityValid
+      ? String("AQI ") + weather.usAqi + " " + airQualityLabel(weather.usAqi) +
+            " · PM2.5 " + String(weather.pm25, 0)
+      : "空气质量等待更新";
+  drawClipped(font, 116, 151, 174, airDetail,
+              weather.airQualityValid && weather.usAqi > 100 ? kYellow : kAccent);
+
+  const char* labels[] = {"今天", "明天", "后天"};
+  for (uint8_t i = 0; i < 3; ++i) {
+    const int16_t left = 12 + i * 100;
+    const WeatherForecastDay& day = weather.days[i];
+    display.fillRoundRect(left, 166, 92, 53, 12, kInfoSurface);
+    drawUtf8(font, left + 10, 185, labels[i], kMuted);
+    drawUtf8(font, left + 10, 204,
+             isnan(day.highC) ? "--" : String(day.highC, 0) + "°", kText);
+    drawUtf8(font, left + 46, 204,
+             isnan(day.lowC) ? "--" : String(day.lowC, 0) + "°", kTextSoft);
+    if (day.rainChance >= 0) drawUtf8(font, left + 10, 217, String("降水 ") + day.rainChance + "%", kAccent);
+  }
+  drawUtf8(font, 16, 235, "底部上划返回桌面", kMuted);
+}
+
+void TftFrameRenderer::renderAutoStatus(Adafruit_GFX& display,
+                                        U8G2_FOR_ADAFRUIT_GFX& font,
+                                        const NavState& state, bool wifiConnected,
+                                        bool bleConnected, const String& ip, uint16_t port,
+                                        bool autoMode, bool pressed) {
+  drawShell(display);
+  drawAppIcon(display, 16, 14, 36, "auto", kAccent);
+  drawUtf8(font, 63, 30, "自动", kText);
+  drawUtf8(font, 63, 47, "独立应用 · 设备状态与服务", kMuted);
+  const bool connected = wifiConnected || bleConnected;
+  display.fillRoundRect(12, 62, 296, 48, 13, kInfoSurface);
+  display.fillCircle(29, 86, 6, connected ? kGreen : kYellow);
+  drawUtf8(font, 45, 82, connected ? "设备在线" : "等待设备连接", kText);
+  drawClipped(font, 45, 101, 244,
+              wifiConnected ? String("Wi-Fi · ") + ip + ":" + port
+                            : (bleConnected ? "BLE 已连接 · Wi-Fi 可选" : "UDP / BLE 均未连接"),
+              kTextSoft);
+  display.fillRoundRect(12, 120, 296, 41, 12, kInfoSurface);
+  drawUtf8(font, 25, 141, "后台服务", kMuted);
+  const String source = state.active ? "导航" : (state.music.active ? "音乐" : "桌面");
+  drawUtf8(font, 112, 141, source, kText);
+  drawUtf8(font, 25, 157, "不会切换到导航界面", kMuted);
+  const uint16_t actionSurface = autoMode ? kExitGreen : kAccent;
+  display.fillRoundRect(12, 177, 296, 43, 14, pressed ? kText : actionSurface);
+  drawUtf8(font, 35, 204, autoMode ? "停止自动接管" : "启动自动接管",
+           pressed ? kCanvas : kText);
+  drawUtf8(font, 205, 204, autoMode ? "运行中" : "未开启",
+           pressed ? kCanvas : kTextSoft);
+  drawUtf8(font, 16, 235, "底部上划返回桌面", kMuted);
+}
+
+void TftFrameRenderer::renderPhoneSheet(Adafruit_GFX& display,
+                                        U8G2_FOR_ADAFRUIT_GFX& font,
+                                        const PhoneState& phone, bool wifiConnected,
+                                        bool bleConnected, bool detail,
+                                        uint8_t detailScroll) {
+  drawShell(display);
+  display.fillRoundRect(140, 8, 40, 4, 2, kMuted);
+  drawUtf8(font, 16, 29, "通知中心", kText);
+  drawUtf8(font, 242, 29, "上滑关闭", kMuted);
+  if (!phone.enabled) {
+    drawClipped(font, 16, 58, 280, "请在手机 App 中启用手机联动", kTextSoft);
+    return;
+  }
+  if (detail && phone.notification.active) {
+    drawClipped(font, 16, 58, 288, phone.notification.app + "  " + phone.notification.title, kText);
+    const String& body = phone.notification.body;
+    const int total = utf8CodePointCount(body);
+    const int lineWidth = 18;
+    const int first = min(total, static_cast<int>(detailScroll) * lineWidth);
+    for (int line = 0; line < 7; ++line) {
+      const int start = first + line * lineWidth;
+      if (start >= total) break;
+      const int end = min(total, start + lineWidth);
+      const int beginOffset = utf8ByteOffset(body, start);
+      const int endOffset = utf8ByteOffset(body, end);
+      drawClipped(font, 16, 90 + line * 20, 288, body.substring(beginOffset, endOffset), kTextSoft);
+    }
+    drawUtf8(font, 16, 232, "上下滑动阅读，点按返回", kMuted);
+    display.fillCircle(295, 20, 4, (wifiConnected || bleConnected) ? kGreen : kYellow);
+    return;
+  }
+  // A compact dashboard gives the most time-sensitive information the largest
+  // visual weight: weather, the next commitment, then the latest notification.
+  display.fillRoundRect(12, 41, 296, 62, 14, kInfoSurface);
+  const String temperature = isnan(phone.weather.temperatureC) ? "--°" : String(phone.weather.temperatureC, 1) + "°";
+  drawBig(display, 24, 49, temperature, 3, kText);
+  drawClipped(font, 115, 64, 174, phone.weather.condition.isEmpty() ? "等待定位" : phone.weather.condition, kTextSoft);
+  const String weatherMeta = phone.weather.aqi >= 0 ? "AQI " + String(phone.weather.aqi) : "天气数据";
+  drawUtf8(font, 115, 87, weatherMeta, phone.weather.aqi >= 0 && phone.weather.aqi > 100 ? kYellow : kAccent);
+  if (!phone.weather.alert.isEmpty()) {
+    display.fillRoundRect(214, 73, 80, 20, 10, kCapsule);
+    drawClipped(font, 224, 88, 62, phone.weather.alert, kRed);
+  }
+  display.fillRoundRect(12, 111, 296, 49, 12, kInfoSurface);
+  drawUtf8(font, 24, 130, "下一日程", kMuted);
+  const String eventDisplay = phone.calendar.title.isEmpty() ? "未来 24 小时无日程" : phone.calendar.title;
+  drawClipped(font, 86, 130, 204, eventDisplay, kText);
+  drawClipped(font, 24, 150, 266, phone.calendar.location.isEmpty() ? "暂无地点" : phone.calendar.location, kTextSoft);
+  display.fillRoundRect(12, 168, 296, 25, 12, kCapsule);
+  String deviceDisplay = phone.device.batteryPercent < 0 ? "手机状态不可用" : String("电量 ") + phone.device.batteryPercent + "%" + (phone.device.charging ? " · 充电中" : "") + "  " + phone.device.network;
+  if (phone.device.signalLevel >= 0) deviceDisplay += "  信号 " + String(phone.device.signalLevel);
+  drawClipped(font, 24, 186, 268, deviceDisplay, kTextSoft);
+  if (phone.notification.active) {
+    display.fillRoundRect(12, 200, 296, 32, 12, kInfoSurface);
+    drawAppIcon(display, 19, 204, 24, phone.notification.app, kAccent);
+    drawClipped(font, 52, 215, 236, phone.notification.app + "  " + phone.notification.title, kText);
+    drawClipped(font, 52, 230, 236, phone.notification.body, kTextSoft);
+  } else {
+    drawClipped(font, 18, 218, 280, "暂无来电或新消息", kMuted);
+  }
+  display.fillCircle(295, 20, 4, (wifiConnected || bleConnected) ? kGreen : kYellow);
+}
+
+void TftFrameRenderer::renderSettings(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
+                                       bool wifiConnected, bool bleConnected, const String& ip,
+                                      uint16_t port, int8_t pressedRow, uint8_t settingsPage) {
+  drawShell(display);
+  const DisplayPreferences settings = DisplayPreferences::load();
+  if (settingsPage == 0) {
+    drawUtf8(font, 16, 28, "设置", kText);
+    drawUtf8(font, 16, 45, "选择类别 · 底部上划返回桌面", kMuted);
+    const char* titles[] = {"显示与亮度", "自动与通知", "设备与连接"};
+    const char* details[] = {"亮度、夜间调暗", "自动接管、消息横幅", "Wi-Fi、BLE、UDP 状态"};
+    const char* icons[] = {"display", "auto", "device"};
+    const uint16_t colors[] = {kAccent, kPurple, kExitGreen};
+    for (int8_t row = 0; row < 3; ++row) {
+      const int16_t top = 58 + row * 51;
+      const bool pressed = pressedRow == row;
+      display.fillRoundRect(12, top, 296, 43, 12, pressed ? kCapsule : kInfoSurface);
+      drawAppIcon(display, 21, top + 6, 31, icons[row], colors[row]);
+      drawUtf8(font, 63, top + 19, titles[row], pressed ? kText : kTextSoft);
+      drawUtf8(font, 63, top + 35, details[row], kMuted);
+      drawUtf8(font, 286, top + 26, ">", pressed ? kText : kMuted);
+    }
+    display.fillRoundRect(12, 214, 296, 16, 8, kCapsule);
+    drawClipped(font, 23, 226, 270,
+                String(wifiConnected ? "Wi-Fi 已连接" : "Wi-Fi 离线") + " · " +
+                    (bleConnected ? "BLE 已连接" : "BLE 等待"), kTextSoft);
+    return;
+  }
+
+  display.fillRoundRect(12, 10, 54, 25, 10, kCapsule);
+  drawUtf8(font, 25, 28, "< 返回", kTextSoft);
+  const bool displayPage = settingsPage == 1;
+  const bool behaviorPage = settingsPage == 2;
+  drawUtf8(font, 78, 28, displayPage ? "显示与亮度" : (behaviorPage ? "自动与通知" : "设备与连接"), kText);
+  drawUtf8(font, 16, 52, "底部上划返回桌面", kMuted);
+  if (settingsPage == 3) {
+    const String statuses[] = {
+        String("Wi-Fi  ") + (wifiConnected ? "已连接" : "离线"),
+        String("BLE  ") + (bleConnected ? "已连接" : "等待连接"),
+        String("UDP  ") + ip + ":" + port,
+        String("显示屏  320×240 · ") + (wifiConnected || bleConnected ? "在线" : "配网模式"),
+    };
+    for (int8_t row = 0; row < 4; ++row) {
+      const int16_t top = 65 + row * 36;
+      display.fillRoundRect(12, top, 296, 29, 10, kInfoSurface);
+      display.fillCircle(28, top + 14, 4,
+                         row == 0 ? (wifiConnected ? kGreen : kMuted) :
+                         row == 1 ? (bleConnected ? kGreen : kMuted) : kAccent);
+      drawClipped(font, 42, top + 20, 248, statuses[row], kTextSoft);
+    }
+    return;
+  }
+
+  const String labels[] = {displayPage ? "亮度" : "自动模式",
+                           displayPage ? "夜间调暗" : "消息横幅"};
+  const String values[] = {displayPage ? String(settings.brightness) + "%"
+                                        : (settings.autoView ? "开启" : "关闭"),
+                           displayPage ? (settings.nightDim ? "开启" : "关闭")
+                                       : (settings.messageBanners ? "开启" : "关闭")};
+  for (int8_t row = 0; row < 2; ++row) {
+    const int16_t top = 70 + row * 42;
+    const bool pressed = pressedRow == row;
+    display.fillRoundRect(12, top, 296, 35, 11, pressed ? kCapsule : kInfoSurface);
+    display.fillCircle(29, top + 17, 5, pressed ? kText : kAccent);
+    drawUtf8(font, 45, top + 23, labels[row], pressed ? kText : kTextSoft);
+    display.fillRoundRect(238, top + 7, 57, 21, 10, pressed ? kText : kSurface);
+    drawUtf8(font, 248, top + 23, values[row], pressed ? kCanvas : kTextSoft);
+  }
+}
+
+void TftFrameRenderer::drawPhoneOverlay(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
+                                        const PhoneState& phone) {
+  const bool call = phone.notification.kind == "call";
+  if (call) {
+    display.fillScreen(kCanvas);
+    drawUtf8(font, 26, 62, "来电", kAccent);
+    drawClipped(font, 26, 112, 268, phone.notification.sender.isEmpty() ? phone.notification.title : phone.notification.sender, kText);
+    drawClipped(font, 26, 145, 268, phone.notification.body, kTextSoft);
+    drawUtf8(font, 26, 208, "来电结束后自动返回", kMuted);
+  } else if (DisplayPreferences::load().messageBanners && phone.receivedAt != 0 &&
+             millis() - phone.receivedAt <= 6000UL) {
+    display.fillRoundRect(8, 8, 304, 62, 10, kInfoSurface);
+    drawAppIcon(display, 16, 19, 38, phone.notification.app, kAccent);
+    drawClipped(font, 64, 31, 230, phone.notification.app + "  " + phone.notification.title, kText);
+    drawClipped(font, 64, 55, 230, phone.notification.body, kTextSoft);
+  }
+}
+
+void TftFrameRenderer::drawAppIcon(Adafruit_GFX& display, int16_t left, int16_t top,
+                                   int16_t size, const String& app, uint16_t surface) {
+  String name = app;
+  name.toLowerCase();
+  uint16_t iconSurface = surface;
+  if (name.indexOf("music") >= 0 || name.indexOf("音乐") >= 0 ||
+      name.indexOf("网易") >= 0 || name.indexOf("qq") >= 0) {
+    iconSurface = kPurple;
+  } else if (name.indexOf("phone") >= 0 || name.indexOf("消息") >= 0 ||
+             name.indexOf("微信") >= 0 || name.indexOf("短信") >= 0) {
+    iconSurface = kOrange;
+  } else if (name.indexOf("setting") >= 0 || name.indexOf("设置") >= 0) {
+    iconSurface = kCapsule;
+  } else if (name.indexOf("weather") >= 0 || name.indexOf("天气") >= 0) {
+    iconSurface = kOrange;
+  } else if (name.indexOf("map") >= 0 || name.indexOf("导航") >= 0 ||
+             name.indexOf("高德") >= 0) {
+    iconSurface = kExitGreen;
+  }
+  display.fillRoundRect(left, top, size, size, max<int16_t>(6, size / 4), iconSurface);
+  const int16_t centerX = left + size / 2;
+  const int16_t centerY = top + size / 2;
+  const int16_t inset = max<int16_t>(5, size / 5);
+  if (name.indexOf("music") >= 0 || name.indexOf("音乐") >= 0 ||
+      name.indexOf("网易") >= 0 || name.indexOf("qq") >= 0) {
+    display.fillCircle(centerX - 3, top + size - inset - 2, 4, kText);
+    display.drawFastVLine(centerX + 1, top + inset, size - inset * 2, kText);
+    display.fillTriangle(centerX + 1, top + inset, centerX + 1, top + inset + 8,
+                         centerX + 9, top + inset + 4, kText);
+  } else if (name.indexOf("phone") >= 0 || name.indexOf("消息") >= 0 ||
+             name.indexOf("微信") >= 0 || name.indexOf("短信") >= 0) {
+    display.fillRoundRect(left + inset, top + inset + 2, size - inset * 2, size / 2,
+                          5, kText);
+    display.fillTriangle(left + inset + 5, top + size / 2 + 2, left + inset + 12,
+                         top + size / 2 + 2, left + inset + 7, top + size - inset, kText);
+  } else if (name.indexOf("setting") >= 0 || name.indexOf("设置") >= 0) {
+    display.drawCircle(centerX, centerY, size / 4, kText);
+    display.fillCircle(centerX, centerY, size / 8, kText);
+    display.fillRect(centerX - 2, top + inset - 1, 4, 6, kText);
+    display.fillRect(centerX - 2, top + size - inset - 5, 4, 6, kText);
+    display.fillRect(left + inset - 1, centerY - 2, 6, 4, kText);
+    display.fillRect(left + size - inset - 5, centerY - 2, 6, 4, kText);
+  } else if (name.indexOf("weather") >= 0 || name.indexOf("天气") >= 0) {
+    display.fillCircle(centerX - 5, centerY - 5, size / 6, kText);
+    display.fillCircle(centerX - 11, centerY + 5, size / 7, kTextSoft);
+    display.fillCircle(centerX, centerY + 3, size / 6, kTextSoft);
+    display.fillCircle(centerX + 11, centerY + 7, size / 8, kTextSoft);
+    display.fillRoundRect(centerX - 13, centerY + 5, 27, size / 6, size / 12, kTextSoft);
+  } else if (name.indexOf("map") >= 0 || name.indexOf("导航") >= 0 ||
+             name.indexOf("高德") >= 0) {
+    display.fillTriangle(centerX, top + inset, left + size - inset, top + size - inset,
+                          centerX, top + size - inset - 5, kText);
+    display.fillTriangle(centerX, top + inset, left + inset, top + size - inset,
+                          centerX, top + size - inset - 5, kTextSoft);
+  } else if (name.indexOf("auto") >= 0 || name.indexOf("自动") >= 0) {
+    const int16_t radius = max<int16_t>(6, size / 4);
+    display.drawCircle(centerX, centerY, radius, kText);
+    display.fillTriangle(centerX + radius + 3, centerY - 2, centerX + radius - 4,
+                         centerY - 8, centerX + radius - 4, centerY + 4, kText);
+    display.fillCircle(centerX - radius - 2, centerY + radius - 1, 2, kTextSoft);
+  } else if (name.indexOf("display") >= 0 || name.indexOf("显示") >= 0) {
+    const int16_t frameLeft = left + inset - 1;
+    const int16_t frameTop = top + inset + 1;
+    const int16_t frameWidth = size - inset * 2 + 2;
+    const int16_t frameHeight = size - inset * 2 - 2;
+    display.drawRoundRect(frameLeft, frameTop, frameWidth, frameHeight, 3, kText);
+    display.fillCircle(centerX, centerY, max<int16_t>(3, size / 9), kTextSoft);
+    display.drawFastHLine(centerX - size / 6, top + size - inset + 2, size / 3, kText);
+  } else {
+    display.fillCircle(centerX, centerY, size / 4, kText);
+    display.fillCircle(centerX - size / 7, centerY - 1, 2, iconSurface);
+    display.fillCircle(centerX + size / 7, centerY - 1, 2, iconSurface);
+    display.fillRoundRect(centerX - size / 7, centerY + 5, size / 3, 3, 2, iconSurface);
+  }
 }
 
 void TftFrameRenderer::drawGestureHint(Adafruit_GFX& display,
                                        U8G2_FOR_ADAFRUIT_GFX& font,
                                        TftViewMode viewMode) {
-  const char* label = "自动";
-  if (viewMode == TftViewMode::Navigation) {
+  const char* label = "桌面";
+  if (viewMode == TftViewMode::Auto) {
+    label = "自动";
+  } else if (viewMode == TftViewMode::Navigation) {
     label = "导航";
   } else if (viewMode == TftViewMode::Music) {
     label = "音乐";
-  } else if (viewMode == TftViewMode::Status) {
-    label = "状态";
+  } else if (viewMode == TftViewMode::Weather) {
+    label = "天气";
+  } else if (viewMode == TftViewMode::Settings) {
+    label = "设置";
   }
   constexpr int16_t left = 112;
   constexpr int16_t top = 215;
   constexpr int16_t width = 96;
   display.fillRoundRect(left, top, width, 21, 10, kInfoSurface);
   display.drawRoundRect(left, top, width, 21, 10, kCapsuleStroke);
-  for (uint8_t index = 0; index < 4; ++index) {
-    const bool selected = static_cast<uint8_t>(viewMode) == index;
-    display.fillCircle(left + 12 + index * 8, top + 10, selected ? 3 : 2,
-                       selected ? kAccent : kMuted);
-  }
-  drawUtf8(font, left + 49, top + 15, label, kTextSoft);
+  drawUtf8(font, left + 31, top + 15, label, kTextSoft);
 }
 
 void TftFrameRenderer::renderMusic(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
-                                    const MusicState& music,
-                                    MediaControlCommand pressedControl) {
+                                     const MusicState& music,
+                                     MediaControlCommand pressedControl,
+                                     int16_t lyricOffsetY) {
   const unsigned long now = millis();
   const int64_t positionMs = music.positionAt(now);
   const int wordProgressPermille = music.wordProgressAt(now);
@@ -377,7 +820,9 @@ void TftFrameRenderer::renderMusic(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX&
   }
 
   drawClipped(font, 15, 160, 126,
-              music.title.isEmpty() ? "网易云音乐" : music.title, kText);
+              music.title.isEmpty()
+                  ? (music.sourceName.isEmpty() ? "音乐播放器" : music.sourceName)
+                  : music.title, kText);
   String byline = music.artist;
   if (!music.album.isEmpty()) {
     byline += (byline.isEmpty() ? "" : " · ") + music.album;
@@ -427,31 +872,32 @@ void TftFrameRenderer::renderMusic(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX&
 
   constexpr int16_t lyricLeft = 163;
   constexpr int16_t lyricWidth = 147;
-  drawClipped(font, lyricLeft, 29, lyricWidth, music.previousLyric, distantLyric);
+  const int16_t lyricStageTop = 52 + lyricOffsetY;
+  drawClipped(font, lyricLeft, lyricStageTop, lyricWidth, music.previousLyric, distantLyric);
 
   const String lyric = music.lyric.isEmpty() ? "暂无歌词" : music.lyric;
   font.setFont(u8g2_font_wqy16_t_gb2312);
   if (music.highlightedLyric.isEmpty() && music.currentWord.isEmpty()) {
-    drawTimedScrollingLine(font, lyricLeft, 82, lyricWidth, lyric,
+    drawTimedScrollingLine(font, lyricLeft, lyricStageTop + 26, lyricWidth, lyric,
                            positionMs, music.lineStartMs,
                            music.lineDurationMs, kText);
   } else {
-    drawKaraokeLine(font, lyricLeft, 82, lyricWidth, lyric,
+    drawKaraokeLine(font, lyricLeft, lyricStageTop + 26, lyricWidth, lyric,
                     music.highlightedLyric, music.currentWord,
                     wordProgressPermille, idleLyric, kText);
   }
   font.setFont(u8g2_font_wqy12_t_gb2312);
   if (!music.translatedLyric.isEmpty()) {
-    drawTimedScrollingLine(font, lyricLeft, 108, lyricWidth,
+    drawTimedScrollingLine(font, lyricLeft, lyricStageTop + 47, lyricWidth,
                            music.translatedLyric, positionMs,
                            music.lineStartMs, music.lineDurationMs,
                            alphaBlend(kCanvas, kText, 0x82));
   }
-  drawClipped(font, lyricLeft, 159, lyricWidth, music.nextLyric, distantLyric);
+  drawClipped(font, lyricLeft, lyricStageTop + 70, lyricWidth, music.nextLyric, distantLyric);
   if (!music.nextLyric.isEmpty()) {
-    display.fillCircle(lyricLeft, 185, 2, alphaBlend(kCanvas, kText, 0x28));
-    display.fillCircle(lyricLeft + 8, 185, 2, alphaBlend(kCanvas, kText, 0x1C));
-    display.fillCircle(lyricLeft + 16, 185, 2, alphaBlend(kCanvas, kText, 0x12));
+    display.fillCircle(lyricLeft, lyricStageTop + 86, 2, alphaBlend(kCanvas, kText, 0x28));
+    display.fillCircle(lyricLeft + 8, lyricStageTop + 86, 2, alphaBlend(kCanvas, kText, 0x1C));
+    display.fillCircle(lyricLeft + 16, lyricStageTop + 86, 2, alphaBlend(kCanvas, kText, 0x12));
   }
 }
 
@@ -703,18 +1149,11 @@ void TftFrameRenderer::drawKaraokeLine(U8G2_FOR_ADAFRUIT_GFX& font, int16_t x,
   drawClipped(font, x, baseline, maxWidth, completed, activeColor);
   const int16_t wordX = x + textWidth(font, completed);
   const int16_t wordWidth = textWidth(font, currentWord);
-  const int16_t activeWidth = static_cast<int16_t>(
-      (static_cast<int32_t>(wordWidth) * constrain(wordProgressPermille, 0, 1000) + 999) /
-      1000);
-  if (activeWidth <= 0 || font.u8g2.gfx == nullptr) return;
-
-  const uint8_t* primary = font.u8g2.font;
-  HorizontalClipCanvas clipped(*font.u8g2.gfx, wordX, wordX + activeWidth);
-  U8G2_FOR_ADAFRUIT_GFX clippedFont;
-  clippedFont.begin(clipped);
-  clippedFont.setFontMode(1);
-  clippedFont.setFont(primary);
-  drawTextWithFallback(clippedFont, wordX, baseline, currentWord, activeColor);
+  if (wordProgressPermille <= 0) return;
+  // Drawing through a temporary clipping canvas can make bitmap fallback
+  // glyphs opaque on some panels, leaving a colored rectangle behind them.
+  // Highlight the active word as one transparent glyph run instead.
+  drawClipped(font, wordX, baseline, wordWidth, currentWord, activeColor);
 }
 
 void TftFrameRenderer::drawTimedScrollingLine(U8G2_FOR_ADAFRUIT_GFX& font,
@@ -743,12 +1182,19 @@ void TftFrameRenderer::drawTimedScrollingLine(U8G2_FOR_ADAFRUIT_GFX& font,
       static_cast<int32_t>(width - maxWidth) * scrollProgress / 1000);
 
   const uint8_t* primary = font.u8g2.font;
-  HorizontalClipCanvas clipped(*font.u8g2.gfx, x, x + maxWidth);
-  U8G2_FOR_ADAFRUIT_GFX clippedFont;
-  clippedFont.begin(clipped);
-  clippedFont.setFontMode(1);
-  clippedFont.setFont(primary);
-  drawTextWithFallback(clippedFont, x - offset, baseline, text, color);
+  size_t start = 0;
+  int16_t skipped = 0;
+  while (start < text.length()) {
+    uint16_t codepoint = 0;
+    size_t bytes = 1;
+    if (!decodeUtf8(text, start, codepoint, bytes)) break;
+    const int16_t glyph = glyphWidth(font, primary, codepoint);
+    if (skipped + glyph > offset) break;
+    skipped += glyph;
+    start += bytes;
+  }
+  font.setFont(primary);
+  drawClipped(font, x, baseline, maxWidth, text.substring(start), color);
 }
 
 void TftFrameRenderer::drawBig(Adafruit_GFX& display, int16_t x, int16_t top,

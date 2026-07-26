@@ -7,6 +7,7 @@
 #include "NetworkManager.h"
 #include "OtaManager.h"
 #include "ProtocolParser.h"
+#include "WeatherService.h"
 
 NetworkManager network;
 BleReceiver ble;
@@ -14,6 +15,7 @@ OtaManager ota;
 ProtocolParser parser;
 TftRenderer display;
 CapacitiveTouch touch;
+WeatherService weather;
 NavState navState;
 
 char packetBuffer[AMAP_PACKET_BUFFER_SIZE];
@@ -48,6 +50,7 @@ void setup() {
   Serial.println("AMap ESP32-S3 Navigation Display");
 
   navState.reset();
+  weather.begin();
   display.begin();
   displayReady = display.isReady();
   touch.begin();
@@ -56,11 +59,12 @@ void setup() {
   // AP/STA mode, otherwise some Arduino core builds abort in coex_enable().
   ble.begin();
   ota.begin();
-  network.begin(&ota, &navState, &ble);
+  network.begin(&ota, &navState, &ble, &weather);
 }
 
 void loop() {
   network.update();
+  weather.update(network.isConnected());
   touch.update();
   const uint8_t touchCount = touch.touchCount();
   const CapacitiveTouchPoint touchPoint = touchCount > 0
@@ -132,8 +136,9 @@ void loop() {
   if (now - lastRenderAt >= 33UL) {
     lastRenderAt = now;
     unsigned long silenceMs = navState.lastPacketAt == 0 ? ULONG_MAX : now - navState.lastPacketAt;
+    const WeatherState weatherState = weather.snapshot();
     display.render(navState, network.isConnected(), ble.isConnected(), network.ipString(),
-                   AMAP_UDP_PORT, silenceMs);
+                   AMAP_UDP_PORT, silenceMs, weatherState);
   }
 
   String statusText = network.statusText();

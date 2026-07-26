@@ -3,8 +3,11 @@
 #include <Arduino.h>
 
 enum class TftViewMode : uint8_t {
-  Auto = 0,
-  Navigation = 1,
-  Music = 2,
-  Status = 3,
+  Home = 0,
+  Auto = 1,
+  Navigation = 2,
+  Music = 3,
+  Settings = 4,
+  AutoStatus = 5,
+  Weather = 6,
 };

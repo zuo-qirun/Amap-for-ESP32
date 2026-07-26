@@ -48,6 +48,7 @@ import java.util.Map;
 public final class MainActivity extends Activity {
     private static final int REQUEST_NOTIFICATIONS = 100;
     private static final int REQUEST_BLE_PERMISSIONS = 101;
+    private static final int REQUEST_PHONE_PERMISSIONS = 102;
     private static final String STATE_BLE_PERMISSION_REQUEST = "ble_permission_request";
     private static final String STATE_NOTIFICATION_PERMISSION_REQUEST =
             "notification_permission_request";
@@ -72,6 +73,13 @@ public final class MainActivity extends Activity {
     private EditText ipInput;
     private EditText portInput;
     private EditText lyricOffsetInput;
+    private Switch phoneEnableSwitch;
+    private Switch phoneNotificationSwitch;
+    private Switch phoneCalendarSwitch;
+    private Switch phoneWeatherSwitch;
+    private Spinner weatherProviderSpinner;
+    private EditText qWeatherHostInput;
+    private EditText qWeatherTokenInput;
     private TextView lastBroadcastText;
     private TextView lastSentText;
     private TextView payloadText;
@@ -208,7 +216,8 @@ public final class MainActivity extends Activity {
         LinearLayout connectionPanel = cardSection(root, "连接", "选择手机与 ESP32 之间的通信方式。");
         LinearLayout devicePanel = cardSection(root, "ESP32 设备", "管理开发板网络、显示、BLE 与固件。");
         LinearLayout navigationPanel = cardSection(root, "导航来源", "选择需要读取导航状态的高德应用。");
-        LinearLayout musicPanel = cardSection(root, "网易云音乐", "授权通知读取并校正逐字歌词时间。");
+        LinearLayout musicPanel = cardSection(root, "音乐播放器", "自动识别标准播放器，并校正逐字歌词时间。");
+        LinearLayout phonePanel = cardSection(root, "手机联动", "把来电、消息、天气、日程和手机状态发送到 ESP32。默认关闭，启用后按需授权。");
         LinearLayout developerPanel = cardSection(root, "诊断", "查看实时数据并验证端到端链路。");
 
         musicStatusText = statusLine(musicPanel, "音乐读取", "正在检查通知使用权");
@@ -224,6 +233,40 @@ public final class MainActivity extends Activity {
         musicHint.setTextColor(colorSecondary);
         musicHint.setPadding(0, dp(8), 0, 0);
         musicPanel.addView(musicHint);
+
+        phoneEnableSwitch = new Switch(this);
+        phoneEnableSwitch.setText("启用手机联动");
+        phonePanel.addView(phoneEnableSwitch);
+        phoneNotificationSwitch = new Switch(this);
+        phoneNotificationSwitch.setText("电话、微信和 QQ 通知（完整预览）");
+        phonePanel.addView(phoneNotificationSwitch);
+        phoneCalendarSwitch = new Switch(this);
+        phoneCalendarSwitch.setText("下一条日历日程");
+        phonePanel.addView(phoneCalendarSwitch);
+        phoneWeatherSwitch = new Switch(this);
+        phoneWeatherSwitch.setText("跟随当前位置的天气与空气质量");
+        phonePanel.addView(phoneWeatherSwitch);
+        Button phonePermissionButton = secondaryButton("授权日历、位置和电话状态");
+        phonePermissionButton.setOnClickListener(v -> requestPhonePermissions());
+        phonePanel.addView(phonePermissionButton);
+        Button phoneAccessButton = secondaryButton("打开通知使用权");
+        phoneAccessButton.setOnClickListener(v -> openMusicAccessSettings());
+        phonePanel.addView(phoneAccessButton);
+        phonePanel.addView(label("天气提供方"));
+        weatherProviderSpinner = new Spinner(this);
+        ArrayAdapter<String> weatherAdapter = new ArrayAdapter<>(this,
+                android.R.layout.simple_spinner_dropdown_item, new String[]{"Open-Meteo（免密钥）", "QWeather"});
+        weatherProviderSpinner.setAdapter(weatherAdapter);
+        styleSpinner(weatherProviderSpinner);
+        phonePanel.addView(weatherProviderSpinner);
+        phonePanel.addView(label("QWeather API Host（仅 QWeather）"));
+        qWeatherHostInput = input("https://your-api-host");
+        qWeatherHostInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        phonePanel.addView(qWeatherHostInput);
+        phonePanel.addView(label("QWeather Bearer Token（仅 QWeather）"));
+        qWeatherTokenInput = input("");
+        qWeatherTokenInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        phonePanel.addView(qWeatherTokenInput);
 
         connectionPanel.addView(label("通信方式"));
         transportSpinner = new Spinner(this);
@@ -368,6 +411,13 @@ public final class MainActivity extends Activity {
         ipInput.setText(AppSettings.getEsp32Ip(this));
         portInput.setText(String.valueOf(AppSettings.getUdpPort(this)));
         lyricOffsetInput.setText(String.valueOf(AppSettings.getLyricOffsetMs(this)));
+        phoneEnableSwitch.setChecked(AppSettings.isPhoneEnabled(this));
+        phoneNotificationSwitch.setChecked(AppSettings.arePhoneNotificationsEnabled(this));
+        phoneCalendarSwitch.setChecked(AppSettings.isPhoneCalendarEnabled(this));
+        phoneWeatherSwitch.setChecked(AppSettings.isPhoneWeatherEnabled(this));
+        weatherProviderSpinner.setSelection(AppSettings.WEATHER_QWEATHER.equals(AppSettings.getWeatherProvider(this)) ? 1 : 0);
+        qWeatherHostInput.setText(AppSettings.getQWeatherHost(this));
+        qWeatherTokenInput.setText(AppSettings.getQWeatherToken(this));
         String targetPackage = AppSettings.getTargetPackage(this);
         targetPackageInput.setText(targetPackage);
         targetAppSpinner.setSelection(findTargetAppPosition(targetPackage));
@@ -422,6 +472,14 @@ public final class MainActivity extends Activity {
         } catch (Throwable ignored) {
         }
         AppSettings.setLyricOffsetMs(this, lyricOffsetMs);
+        AppSettings.setPhoneEnabled(this, phoneEnableSwitch.isChecked());
+        AppSettings.setPhoneNotificationsEnabled(this, phoneNotificationSwitch.isChecked());
+        AppSettings.setPhoneCalendarEnabled(this, phoneCalendarSwitch.isChecked());
+        AppSettings.setPhoneWeatherEnabled(this, phoneWeatherSwitch.isChecked());
+        AppSettings.setWeatherProvider(this, weatherProviderSpinner.getSelectedItemPosition() == 1
+                ? AppSettings.WEATHER_QWEATHER : AppSettings.WEATHER_OPEN_METEO);
+        AppSettings.setQWeatherHost(this, qWeatherHostInput.getText().toString());
+        AppSettings.setQWeatherToken(this, qWeatherTokenInput.getText().toString());
     }
 
     private List<TargetAppChoice> loadTargetAppChoices() {
@@ -599,6 +657,14 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private void requestPhonePermissions() {
+        List<String> missing = new ArrayList<>();
+        if (checkSelfPermission(Manifest.permission.READ_CALENDAR) != PackageManager.PERMISSION_GRANTED) missing.add(Manifest.permission.READ_CALENDAR);
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) missing.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) missing.add(Manifest.permission.READ_PHONE_STATE);
+        if (!missing.isEmpty()) requestPermissions(missing.toArray(new String[0]), REQUEST_PHONE_PERMISSIONS);
+    }
+
     private boolean hasMusicListenerAccess() {
         String enabled = Settings.Secure.getString(getContentResolver(),
                 "enabled_notification_listeners");
@@ -746,6 +812,11 @@ public final class MainActivity extends Activity {
             } else if (AppSettings.isEnabled(this)) {
                 requestBatteryExemption();
             }
+            return;
+        }
+        if (requestCode == REQUEST_PHONE_PERMISSIONS) {
+            refreshStatus();
+            if (AppSettings.isEnabled(this)) startForwarder(ForwarderService.ACTION_START);
             return;
         }
         if (requestCode != REQUEST_BLE_PERMISSIONS) {

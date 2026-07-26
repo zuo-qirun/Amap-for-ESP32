@@ -20,6 +20,16 @@ final class AppSettings {
     private static final String KEY_LAST_ERROR = "last_error";
     private static final String KEY_LAST_BROADCAST = "last_broadcast";
     private static final String KEY_LAST_TRAFFIC_DIAGNOSTIC = "last_traffic_diagnostic";
+    private static final String KEY_PHONE_ENABLED = "phone_enabled";
+    private static final String KEY_PHONE_NOTIFICATIONS = "phone_notifications";
+    private static final String KEY_PHONE_CALENDAR = "phone_calendar";
+    private static final String KEY_PHONE_WEATHER = "phone_weather";
+    private static final String KEY_WEATHER_PROVIDER = "weather_provider";
+    private static final String KEY_QWEATHER_HOST = "qweather_host";
+    private static final String KEY_QWEATHER_TOKEN = "qweather_token";
+
+    static final String WEATHER_OPEN_METEO = "open_meteo";
+    static final String WEATHER_QWEATHER = "qweather";
 
     private AppSettings() {}
 
@@ -126,4 +136,19 @@ final class AppSettings {
     static String getLastError(Context context) {
         return prefs(context).getString(KEY_LAST_ERROR, "");
     }
+
+    static boolean isPhoneEnabled(Context context) { return prefs(context).getBoolean(KEY_PHONE_ENABLED, false); }
+    static void setPhoneEnabled(Context context, boolean enabled) { prefs(context).edit().putBoolean(KEY_PHONE_ENABLED, enabled).apply(); }
+    static boolean arePhoneNotificationsEnabled(Context context) { return prefs(context).getBoolean(KEY_PHONE_NOTIFICATIONS, false); }
+    static void setPhoneNotificationsEnabled(Context context, boolean enabled) { prefs(context).edit().putBoolean(KEY_PHONE_NOTIFICATIONS, enabled).apply(); }
+    static boolean isPhoneCalendarEnabled(Context context) { return prefs(context).getBoolean(KEY_PHONE_CALENDAR, false); }
+    static void setPhoneCalendarEnabled(Context context, boolean enabled) { prefs(context).edit().putBoolean(KEY_PHONE_CALENDAR, enabled).apply(); }
+    static boolean isPhoneWeatherEnabled(Context context) { return prefs(context).getBoolean(KEY_PHONE_WEATHER, false); }
+    static void setPhoneWeatherEnabled(Context context, boolean enabled) { prefs(context).edit().putBoolean(KEY_PHONE_WEATHER, enabled).apply(); }
+    static String getWeatherProvider(Context context) { return prefs(context).getString(KEY_WEATHER_PROVIDER, WEATHER_OPEN_METEO); }
+    static void setWeatherProvider(Context context, String provider) { prefs(context).edit().putString(KEY_WEATHER_PROVIDER, WEATHER_QWEATHER.equals(provider) ? WEATHER_QWEATHER : WEATHER_OPEN_METEO).apply(); }
+    static String getQWeatherHost(Context context) { return prefs(context).getString(KEY_QWEATHER_HOST, ""); }
+    static void setQWeatherHost(Context context, String host) { prefs(context).edit().putString(KEY_QWEATHER_HOST, host == null ? "" : host.trim().replaceAll("/+$", "")).apply(); }
+    static String getQWeatherToken(Context context) { return prefs(context).getString(KEY_QWEATHER_TOKEN, ""); }
+    static void setQWeatherToken(Context context, String token) { prefs(context).edit().putString(KEY_QWEATHER_TOKEN, token == null ? "" : token.trim()).apply(); }
 }

@@ -20,6 +20,7 @@ final class Esp32NavState {
     final RoadInfo roadInfo = new RoadInfo();
     final GuideInfo guide = new GuideInfo();
     final Music music = new Music();
+    final Phone phone = new Phone();
     String alert = "";
     String detail = "";
     long updatedAt = System.currentTimeMillis();
@@ -71,6 +72,7 @@ final class Esp32NavState {
         out.guide.nextServiceAreaName = guide.nextServiceAreaName;
         out.guide.nextServiceAreaDistance = guide.nextServiceAreaDistance;
         out.music.copyFrom(music);
+        out.phone.copyFrom(phone);
         out.alert = alert;
         out.detail = detail;
         out.updatedAt = updatedAt;
@@ -103,6 +105,7 @@ final class Esp32NavState {
                 .append(guide.serviceAreaName).append('|').append(guide.serviceAreaDistance).append('|')
                 .append(guide.nextServiceAreaName).append('|').append(guide.nextServiceAreaDistance);
         sb.append('|').append(music.active).append('|').append(music.playing).append('|')
+                .append(music.source).append('|').append(music.sourceName).append('|')
                 .append(music.songId).append('|').append(music.title).append('|').append(music.artist)
                 .append('|').append(music.positionMs).append('|').append(music.durationMs).append('|')
                 .append(music.lyric).append('|').append(music.translatedLyric).append('|')
@@ -112,6 +115,7 @@ final class Esp32NavState {
                 .append(music.lineDurationMs).append('|')
                 .append(music.wordProgressPermille);
         sb.append('|').append(alert).append('|').append(detail);
+        sb.append('|').append(phone.fingerprint());
         return sb.toString();
     }
 
@@ -165,6 +169,7 @@ final class Esp32NavState {
         state.music.active = true;
         state.music.playing = true;
         state.music.source = "netease";
+        state.music.sourceName = "网易云音乐";
         state.music.songId = 186016L;
         state.music.title = "晴天";
         state.music.artist = "周杰伦";
@@ -282,7 +287,8 @@ final class Esp32NavState {
     static final class Music {
         boolean active;
         boolean playing;
-        String source = "netease";
+        String source = "media";
+        String sourceName = "音乐播放器";
         long songId = -1L;
         String title = "";
         String artist = "";
@@ -306,6 +312,7 @@ final class Esp32NavState {
             active = value.active;
             playing = value.playing;
             source = value.source;
+            sourceName = value.sourceName;
             songId = value.songId;
             title = value.title;
             artist = value.artist;
@@ -325,5 +332,76 @@ final class Esp32NavState {
             wordDurationMs = value.wordDurationMs;
             wordProgressPermille = value.wordProgressPermille;
         }
+    }
+
+    static final class Phone {
+        boolean enabled;
+        final Notification notification = new Notification();
+        final Calendar calendar = new Calendar();
+        final Weather weather = new Weather();
+        final Device device = new Device();
+
+        void copyFrom(Phone value) {
+            enabled = value.enabled;
+            notification.copyFrom(value.notification);
+            calendar.copyFrom(value.calendar);
+            weather.copyFrom(value.weather);
+            device.copyFrom(value.device);
+        }
+
+        String fingerprint() {
+            return enabled + "|" + notification.fingerprint() + "|" + calendar.fingerprint()
+                    + "|" + weather.fingerprint() + "|" + device.fingerprint();
+        }
+    }
+
+    static final class Notification {
+        boolean active;
+        String kind = "";
+        String app = "";
+        String sender = "";
+        String title = "";
+        String body = "";
+        long postedAt;
+        long expiresAt;
+
+        void copyFrom(Notification value) {
+            active = value.active; kind = value.kind; app = value.app; sender = value.sender;
+            title = value.title; body = value.body; postedAt = value.postedAt; expiresAt = value.expiresAt;
+        }
+        String fingerprint() { return active + "|" + kind + "|" + app + "|" + sender + "|" + title + "|" + body + "|" + expiresAt; }
+    }
+
+    static final class Calendar {
+        String title = "";
+        String location = "";
+        long startAt = -1L;
+        long endAt = -1L;
+        void copyFrom(Calendar value) { title = value.title; location = value.location; startAt = value.startAt; endAt = value.endAt; }
+        String fingerprint() { return title + "|" + location + "|" + startAt + "|" + endAt; }
+    }
+
+    static final class Weather {
+        String provider = "";
+        String condition = "";
+        int code = -1;
+        double temperatureC = Double.NaN;
+        double precipitationMm = Double.NaN;
+        int aqi = -1;
+        String alert = "";
+        long observedAt;
+        String error = "";
+        void copyFrom(Weather value) { provider = value.provider; condition = value.condition; code = value.code; temperatureC = value.temperatureC; precipitationMm = value.precipitationMm; aqi = value.aqi; alert = value.alert; observedAt = value.observedAt; error = value.error; }
+        String fingerprint() { return provider + "|" + condition + "|" + code + "|" + temperatureC + "|" + precipitationMm + "|" + aqi + "|" + alert + "|" + observedAt + "|" + error; }
+    }
+
+    static final class Device {
+        int batteryPercent = -1;
+        boolean charging;
+        String network = "none";
+        boolean bluetoothOn;
+        int signalLevel = -1;
+        void copyFrom(Device value) { batteryPercent = value.batteryPercent; charging = value.charging; network = value.network; bluetoothOn = value.bluetoothOn; signalLevel = value.signalLevel; }
+        String fingerprint() { return batteryPercent + "|" + charging + "|" + network + "|" + bluetoothOn + "|" + signalLevel; }
     }
 }

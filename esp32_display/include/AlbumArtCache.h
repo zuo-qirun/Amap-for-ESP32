@@ -5,7 +5,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
-// Downloads one NetEase album cover at a time on a background FreeRTOS task.
+// Downloads one resolved album cover at a time on a background FreeRTOS task.
 // Decoded RGB565 pixels live in PSRAM and are reused until the song changes.
 class AlbumArtCache {
 public:

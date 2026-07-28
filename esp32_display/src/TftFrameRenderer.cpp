@@ -448,6 +448,36 @@ uint16_t alphaBlend(uint16_t background, uint16_t foreground, uint8_t alpha) {
   return static_cast<uint16_t>((red << 11) | (green << 5) | blue);
 }
 
+void drawInterludeDots(Adafruit_GFX& display, const MusicState& music,
+                       int64_t positionMs, unsigned long now, int16_t left,
+                       int16_t baseline, uint16_t background, uint16_t color,
+                       float entranceProgress = 1.0f) {
+  if (!music.interlude || music.lineStartMs < 0 || music.lineDurationMs <= 0) return;
+
+  // Refined treats an instrumental gap as three equal word-like beats. Keep
+  // that timing identical in every music layout; only placement and palette
+  // are supplied by the host page.
+  const int64_t local = min<int64_t>(music.lineDurationMs,
+                                     max<int64_t>(0, positionMs - music.lineStartMs));
+  const int64_t perDot = max<int64_t>(1, music.lineDurationMs / 3);
+  const float breath = music.playing
+      ? 1.0f + 0.05f * sinf(static_cast<float>(now % 2000UL) * PI / 1000.0f)
+      : 1.0f;
+  const float entrance = constrain(entranceProgress, 0.0f, 1.0f);
+  for (int index = 0; index < 3; ++index) {
+    const float progress = constrain(
+        static_cast<float>(local - perDot * index) / static_cast<float>(perDot),
+        0.0f, 1.0f);
+    const float scale = (0.9f + 0.1f * min(1.0f, progress * 2.0f)) * breath;
+    const uint8_t opacity = static_cast<uint8_t>(
+        (0.2f + 0.7f * progress) * entrance * 255.0f);
+    const int16_t radius = max<int16_t>(
+        3, static_cast<int16_t>(4.0f * scale + 0.5f));
+    display.fillCircle(left + 7 + index * 15, baseline - 6, radius,
+                       alphaBlend(background, color, opacity));
+  }
+}
+
 void drawAlphaBitmap(Adafruit_GFX& display, const NaviLinkIcons::Bitmap& bitmap, int16_t x,
                      int16_t y, uint16_t color, uint16_t background) {
   for (uint8_t row = 0; row < bitmap.height; ++row) {
@@ -1145,7 +1175,10 @@ void TftFrameRenderer::renderMusic(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX&
 
   const String lyric = music.lyric.isEmpty() ? "暂无歌词" : music.lyric;
   font.setFont(u8g2_font_wqy16_t_gb2312);
-  if (music.highlightedLyric.isEmpty() && music.currentWord.isEmpty()) {
+  if (music.interlude && music.lineStartMs >= 0 && music.lineDurationMs > 0) {
+    drawInterludeDots(display, music, positionMs, now, lyricLeft,
+                      lyricStageTop + 46, kCanvas, kText);
+  } else if (music.highlightedLyric.isEmpty() && music.currentWord.isEmpty()) {
     drawTimedScrollingLine(font, lyricLeft, lyricStageTop + 46, lyricWidth, lyric,
                            positionMs, music.lineStartMs,
                            music.lineDurationMs, kText);
@@ -1244,25 +1277,8 @@ void TftFrameRenderer::renderMusicRefinedNowPlaying(
     const uint16_t activeLine = alphaBlend(medium, strong,
         static_cast<uint8_t>(currentEase * 255.0f));
     if (music.interlude && music.lineStartMs >= 0 && music.lineDurationMs > 0) {
-      // Refined divides the gap into three equal word-like animations. The
-      // active row fades in after its line transition and breathes as a group.
-      const int64_t local = min<int64_t>(music.lineDurationMs,
-                                         max<int64_t>(0, positionMs - music.lineStartMs));
-      const int64_t perDot = max<int64_t>(1, music.lineDurationMs / 3);
-      const float breath = music.playing
-          ? 1.0f + 0.05f * sinf(static_cast<float>(now % 2000UL) * PI / 1000.0f)
-          : 1.0f;
-      for (int index = 0; index < 3; ++index) {
-        const float progress = constrain(
-            static_cast<float>(local - perDot * index) / static_cast<float>(perDot),
-            0.0f, 1.0f);
-        const float scale = (0.9f + 0.1f * min(1.0f, progress * 2.0f)) * breath;
-        const uint8_t opacity = static_cast<uint8_t>(
-            (0.2f + 0.7f * progress) * currentEase * 255.0f);
-        const int16_t radius = max<int16_t>(3, static_cast<int16_t>(4.0f * scale + 0.5f));
-        display.fillCircle(lyricLeft + 7 + index * 15, currentBaseline - 6, radius,
-                           alphaBlend(backdrop, strong, opacity));
-      }
+      drawInterludeDots(display, music, positionMs, now, lyricLeft,
+                        currentBaseline, backdrop, strong, currentEase);
     } else if (music.highlightedLyric.isEmpty() && music.currentWord.isEmpty()) {
       drawTimedScrollingLine(font, lyricLeft, currentBaseline, lyricWidth, lyric,
                              positionMs, music.lineStartMs,
@@ -1393,7 +1409,9 @@ void TftFrameRenderer::renderMusicPipWindow(Adafruit_GFX& display,
   if (regionVisible(regions, 14, 132, 284, 94)) {
   const String lyric = music.lyric.isEmpty() ? "暂无歌词" : music.lyric;
   font.setFont(u8g2_font_wqy16_t_gb2312);
-  if (music.highlightedLyric.isEmpty() && music.currentWord.isEmpty()) {
+  if (music.interlude && music.lineStartMs >= 0 && music.lineDurationMs > 0) {
+    drawInterludeDots(display, music, positionMs, now, 18, 155, panel, textStrong);
+  } else if (music.highlightedLyric.isEmpty() && music.currentWord.isEmpty()) {
     drawTimedScrollingLine(font, 18, 155, 276, lyric, positionMs, music.lineStartMs,
                            music.lineDurationMs, textStrong);
   } else {

@@ -70,4 +70,23 @@ public class LrcTimelineTest {
         assertEquals(1_000L, gap.lineStartMs);
         assertEquals(6_000L, gap.lineDurationMs);
     }
+
+    @Test
+    public void exposesInterludeAfterPlainLrcCreditInsteadOfStretchingIt() {
+        LrcTimeline timeline = LrcTimeline.parse(
+                "[00:02.00]作曲 : Thomas Bergersen\n"
+                        + "[01:07.12]Standing still as they charge", "");
+
+        LrcTimeline.At credit = timeline.at(6_500L);
+        assertFalse(credit.interlude);
+        assertEquals("作曲 : Thomas Bergersen", credit.lyric);
+
+        LrcTimeline.At gap = timeline.at(15_175L);
+        assertTrue(gap.interlude);
+        assertEquals("", gap.lyric);
+        assertEquals("作曲 : Thomas Bergersen", gap.previousLyric);
+        assertEquals("Standing still as they charge", gap.nextLyric);
+        assertEquals(7_000L, gap.lineStartMs);
+        assertEquals(60_120L, gap.lineDurationMs);
+    }
 }

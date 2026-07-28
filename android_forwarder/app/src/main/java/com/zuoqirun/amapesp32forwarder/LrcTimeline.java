@@ -9,6 +9,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 final class LrcTimeline {
+    private static final long PLAIN_LINE_HOLD_MS = 5_000L;
+    private static final long MIN_INTERLUDE_MS = 5_000L;
     private static final Pattern TIME_TAG = Pattern.compile(
             "\\[(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?]");
     private static final Pattern YRC_LINE = Pattern.compile(
@@ -63,10 +65,17 @@ final class LrcTimeline {
         Line current = currentIndex >= 0 ? lines.get(currentIndex) : null;
         Line previous = currentIndex > 0 ? lines.get(currentIndex - 1) : null;
         Line next = low < lines.size() ? lines.get(low) : null;
-        if (current != null && next != null && current.durationMs > 0L) {
-            long currentEndMs = current.timeMs + current.durationMs;
+        if (current != null && next != null) {
+            // YRC gives us an exact sung-line duration. Plain LRC does not, so
+            // keeping its last line alive until the next timestamp can turn a
+            // minute-long instrumental intro into a minute-long credit line.
+            // Refined instead yields an empty interlude row. Give an untimed
+            // line five readable seconds, then expose the remaining long gap.
+            long visibleDurationMs = current.durationMs > 0L
+                    ? current.durationMs : PLAIN_LINE_HOLD_MS;
+            long currentEndMs = current.timeMs + visibleDurationMs;
             long gapDurationMs = next.timeMs - currentEndMs;
-            if (gapDurationMs >= 5_000L && positionMs >= currentEndMs) {
+            if (gapDurationMs >= MIN_INTERLUDE_MS && positionMs >= currentEndMs) {
                 return new At(current.text, "", "", next.text, true, "", "",
                         currentEndMs, gapDurationMs, -1L, 0L, 0);
             }

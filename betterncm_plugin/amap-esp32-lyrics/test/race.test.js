@@ -56,6 +56,10 @@ const context = {
           { time: 1000, duration: 6000, originalLyric: "", isInterlude: true, dynamicLyric: [] },
           { time: 7000, duration: 2000, originalLyric: "After", dynamicLyric: [] },
         ];
+        if (original === "PLAIN_GAP") return [
+          { time: 2000, duration: 65120, originalLyric: "作曲 : Thomas Bergersen", dynamicLyric: [] },
+          { time: 67120, duration: 3160, originalLyric: "Standing still as they charge", dynamicLyric: [] },
+        ];
         return original ? [{
           time: 0,
           duration: 5000,
@@ -133,6 +137,26 @@ const flush = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(interludeFrames.at(-1).music.lineDurationMs, 6000);
   assert.equal(interludeFrames.at(-1).music.previousLyric, "Before");
   assert.equal(interludeFrames.at(-1).music.nextLyric, "After");
+
+  currentSong = {
+    id: 5,
+    name: "Plain LRC gap",
+    artists: [{ name: "Artist E" }],
+    album: { name: "Album E", picUrl: "https://example.test/e.jpg" },
+    duration: 175595,
+  };
+  callbacks["Load:audioplayer"]();
+  await flush();
+  pendingLyrics.get("5")({ lrc: { lyric: "PLAIN_GAP" } });
+  await flush();
+  callbacks["PlayProgress:audioplayer"](null, 15.175);
+  callbacks["PlayState:audioplayer"]("play");
+  await flush();
+  const plainGapFrames = frames.filter(frame => frame.music.songId === 5);
+  assert.equal(plainGapFrames.at(-1).music.interlude, true);
+  assert.equal(plainGapFrames.at(-1).music.lyric, "");
+  assert.equal(plainGapFrames.at(-1).music.lineStartMs, 7000);
+  assert.equal(plainGapFrames.at(-1).music.lineDurationMs, 60120);
 
   currentSong = {
     id: 3,

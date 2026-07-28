@@ -105,10 +105,20 @@ plugin.onLoad(() => {
       if (text || (Number.isFinite(start) && durationMs >= 5000)) result.push(line);
 
       const next = source[index + 1];
-      if (!text || !next || durationMs <= 0 || !Number.isFinite(start)) continue;
+      if (!text || !next || !Number.isFinite(start)) continue;
       const nextText = String(next.originalLyric || "").trim();
       const nextStart = Number(next.dynamicLyricTime || next.time);
-      const end = Number(line.dynamicLyricTime || start) + durationMs;
+      const hasWordTiming = Array.isArray(line.dynamicLyric) && line.dynamicLyric.length > 0;
+      let end = Number(line.dynamicLyricTime || start) + durationMs;
+      // LibLyric assigns a plain LRC line the complete interval up to the next
+      // timestamp. For long instrumental gaps this stretches a short credit or
+      // lyric across the whole gap, leaving no empty row for Refined's dots.
+      // Match the phone parser: keep it readable for five seconds, then expose
+      // a synthetic interlude if at least another five seconds remain.
+      if (!hasWordTiming && Number.isFinite(nextStart) && nextStart - start >= 10000 &&
+          (durationMs <= 0 || end >= nextStart)) {
+        end = start + 5000;
+      }
       if (nextText && Number.isFinite(nextStart) && nextStart - end >= 5000) {
         result.push({ time: end, duration: nextStart - end, originalLyric: "", isInterlude: true });
       }

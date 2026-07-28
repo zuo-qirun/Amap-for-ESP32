@@ -19,3 +19,14 @@ attribution and source disclosure only; it does not claim that the Navi-Link
 material is covered by this repository's license, and it does not grant any
 additional rights to that material. Copyright and other rights in Navi-Link
 remain with its respective authors and contributors.
+
+## Refined Now Playing
+
+The optional TFT `Refined` music page adapts the composition, cover-derived
+background, lyric hierarchy, 500 ms line motion, and staggered easing of
+[solstice23/refined-now-playing-netease](https://github.com/solstice23/refined-now-playing-netease)
+at commit `f3b3e2b38809e711d5c60cb2b7f8ce1eda318bda` to the 320x240 embedded display.
+
+Refined Now Playing is licensed under the MIT License. Copyright (c) 2022
+solstice23. The original license and source repository remain the authoritative
+license notice for that project.

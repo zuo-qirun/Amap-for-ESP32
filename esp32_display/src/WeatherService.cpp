@@ -138,6 +138,15 @@ void WeatherService::update(bool wifiConnected) {
   }
 }
 
+bool WeatherService::requestRefresh() {
+  if (lock == nullptr) return false;
+  xSemaphoreTake(lock, portMAX_DELAY);
+  const bool accepted = state.configured && !requestInFlight;
+  if (accepted) nextRefreshAt = 0;
+  xSemaphoreGive(lock);
+  return accepted;
+}
+
 void WeatherService::taskEntry(void* context) {
   static_cast<WeatherService*>(context)->fetch();
   vTaskDelete(nullptr);

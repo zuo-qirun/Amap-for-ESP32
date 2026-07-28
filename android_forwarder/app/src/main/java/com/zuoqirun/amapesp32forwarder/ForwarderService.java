@@ -39,7 +39,19 @@ public final class ForwarderService extends Service implements AMapBroadcastRece
                     lastMusicSessionPollAt = now;
                     MusicNotificationListener.refreshMediaState();
                 }
-                forwarder.sendMusicUpdate(withMusic(aggregator.snapshot()));
+                Esp32NavState snapshot = withMusic(aggregator.snapshot());
+                // A music_update only carries active/mode plus music.  If the
+                // AMap transition broadcast races an in-flight UDP send, the
+                // ESP32 would then know navigation is active but never receive
+                // the turn and ETA fields required to render it.  Refresh the
+                // complete navigation frame while a route is active; this also
+                // repairs a missed transition without waiting for a new turn.
+                if (snapshot.active && now - lastNavigationRefreshAt >= 1000L) {
+                    lastNavigationRefreshAt = now;
+                    forwarder.send(snapshot, true);
+                } else {
+                    forwarder.sendMusicUpdate(snapshot);
+                }
                 refreshPhone(false);
                 handler.postDelayed(this, MusicStateStore.isActive() ? 200L : 1000L);
             }
@@ -64,6 +76,7 @@ public final class ForwarderService extends Service implements AMapBroadcastRece
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
     private long lastMusicSessionPollAt;
+    private long lastNavigationRefreshAt;
     private String lastPhoneFingerprint = "";
     private int mediaControlGeneration;
 
@@ -208,6 +221,12 @@ public final class ForwarderService extends Service implements AMapBroadcastRece
     }
 
     private void requestAmapSnapshots(boolean includeExit) {
+        // Query the two frames that establish route activity before asking for
+        // optional decorations.  Some AMap Auto builds emit the transition
+        // only once, so relying on passive broadcasts leaves the display in
+        // standby when that one packet coincides with another UDP send.
+        requestAmapSnapshot(AMapConstants.KEY_TYPE_NAVIGATION_STATE, 0);
+        requestAmapSnapshot(AMapConstants.KEY_TYPE_ROUTE_GUIDANCE, 0);
         requestAmapSnapshot(AMapConstants.KEY_TYPE_REQUEST_LANE, 0);
         requestAmapSnapshot(AMapConstants.KEY_TYPE_TRAFFIC_LIGHT, 0);
         requestAmapSnapshot(AMapConstants.KEY_TYPE_TMC, 0);

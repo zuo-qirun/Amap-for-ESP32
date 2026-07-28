@@ -14,6 +14,115 @@ extern const uint8_t u8g2_font_unifont_t_gb2312[];
 extern const uint8_t u8g2_font_unifont_t_korean1[];
 extern const uint8_t u8g2_font_unifont_t_korean2[];
 
+void TftRenderRegions::add(int16_t x, int16_t y, int16_t width, int16_t height) {
+  // Dirty detection and transfer operate on 16x8 tiles. Restore the complete
+  // boundary tiles as well, otherwise pixels just outside an exact overlay
+  // rectangle can come from a stale rotated work buffer and be transferred
+  // together with the overlay (most visible around the FPS and gesture pills).
+  constexpr int16_t kTileWidth = 16;
+  constexpr int16_t kTileHeight = 8;
+  if (width <= 0 || height <= 0) return;
+  const int16_t clippedLeft = max<int16_t>(0, x);
+  const int16_t clippedTop = max<int16_t>(0, y);
+  const int16_t clippedRight = min<int16_t>(AMAP_TFT_WIDTH, x + width);
+  const int16_t clippedBottom = min<int16_t>(AMAP_TFT_HEIGHT, y + height);
+  if (clippedRight <= clippedLeft || clippedBottom <= clippedTop) return;
+  const int16_t left = clippedLeft / kTileWidth * kTileWidth;
+  const int16_t top = clippedTop / kTileHeight * kTileHeight;
+  const int16_t right = min<int16_t>(AMAP_TFT_WIDTH,
+      (clippedRight + kTileWidth - 1) / kTileWidth * kTileWidth);
+  const int16_t bottom = min<int16_t>(AMAP_TFT_HEIGHT,
+      (clippedBottom + kTileHeight - 1) / kTileHeight * kTileHeight);
+  if (right <= left || bottom <= top) return;
+
+  TftRenderRect incoming;
+  incoming.x = left;
+  incoming.y = top;
+  incoming.width = static_cast<int16_t>(right - left);
+  incoming.height = static_cast<int16_t>(bottom - top);
+  // Coalesce transitively.  Merging into only the first matching rectangle
+  // can leave a later rectangle overlapping the enlarged result, which costs
+  // another address-window transaction and makes the reported pixel count
+  // larger than the area actually composed.
+  for (uint8_t i = 0; i < count;) {
+    const TftRenderRect current = rects[i];
+    const int16_t currentRight = current.x + current.width;
+    const int16_t currentBottom = current.y + current.height;
+    const int16_t incomingRight = incoming.x + incoming.width;
+    const int16_t incomingBottom = incoming.y + incoming.height;
+    const int16_t mergedLeft = min(current.x, incoming.x);
+    const int16_t mergedTop = min(current.y, incoming.y);
+    const int16_t mergedRight = max(currentRight, incomingRight);
+    const int16_t mergedBottom = max(currentBottom, incomingBottom);
+    const int16_t overlapWidth = max<int16_t>(0,
+        min(currentRight, incomingRight) - max(current.x, incoming.x));
+    const int16_t overlapHeight = max<int16_t>(0,
+        min(currentBottom, incomingBottom) - max(current.y, incoming.y));
+    const uint32_t unionArea =
+        static_cast<uint32_t>(current.width) * current.height +
+        static_cast<uint32_t>(incoming.width) * incoming.height -
+        static_cast<uint32_t>(overlapWidth) * overlapHeight;
+    const uint32_t boundingArea =
+        static_cast<uint32_t>(mergedRight - mergedLeft) *
+        static_cast<uint32_t>(mergedBottom - mergedTop);
+    // Merge only when the bounding box contains no uncovered corner.  A lyric
+    // region touching the FPS tile, for example, forms an L-shape; merging its
+    // bounding box would submit the untouched gap from a stale work buffer.
+    if (boundingArea == unionArea) {
+      incoming.x = mergedLeft;
+      incoming.y = mergedTop;
+      incoming.width = mergedRight - mergedLeft;
+      incoming.height = mergedBottom - mergedTop;
+      rects[i] = rects[--count];
+      i = 0;
+      continue;
+    }
+    ++i;
+  }
+  if (count < MAX_RECTS) {
+    rects[count++] = incoming;
+    return;
+  }
+
+  // Correctness wins if an unusually fragmented update exceeds the fixed
+  // rectangle budget.  Silently dropping the last region leaves stale touch
+  // feedback or text on screen; one full-screen compose is rare and safe.
+  count = 1;
+  rects[0].x = 0;
+  rects[0].y = 0;
+  rects[0].width = AMAP_TFT_WIDTH;
+  rects[0].height = AMAP_TFT_HEIGHT;
+}
+
+bool TftRenderRegions::contains(int16_t x, int16_t y) const {
+  if (count == 0) return false;
+  for (uint8_t i = 0; i < count; ++i) {
+    const TftRenderRect& rect = rects[i];
+    if (x >= rect.x && x < rect.x + rect.width &&
+        y >= rect.y && y < rect.y + rect.height) return true;
+  }
+  return false;
+}
+
+bool TftRenderRegions::intersects(int16_t x, int16_t y, int16_t width,
+                                  int16_t height) const {
+  if (count == 0 || width <= 0 || height <= 0) return false;
+  for (uint8_t i = 0; i < count; ++i) {
+    const TftRenderRect& rect = rects[i];
+    if (x < rect.x + rect.width && x + width > rect.x &&
+        y < rect.y + rect.height && y + height > rect.y) return true;
+  }
+  return false;
+}
+
+uint32_t TftRenderRegions::pixelCount() const {
+  uint32_t pixels = 0;
+  for (uint8_t i = 0; i < count; ++i) {
+    pixels += static_cast<uint32_t>(rects[i].width) * rects[i].height;
+  }
+  return pixels;
+}
+
 namespace {
 constexpr uint16_t kCanvas = 0x0000;
 constexpr uint16_t kSurface = 0x1082;       // Navi-Link #121212
@@ -32,6 +141,11 @@ constexpr uint16_t kYellow = 0xCCC0;        // Navi-Link #CC9900
 constexpr uint16_t kGreen = 0x366B;         // Navi-Link #34C759
 constexpr uint16_t kPurple = 0x715C;        // soft violet for personal apps
 constexpr uint16_t kOrange = 0xFC40;        // warm, high-visibility utility accent
+
+bool regionVisible(const TftRenderRegions* regions, int16_t x, int16_t y,
+                   int16_t width, int16_t height) {
+  return regions == nullptr || regions->intersects(x, y, width, height);
+}
 
 int utf8CodePointCount(const String& text) {
   int count = 0;
@@ -132,6 +246,12 @@ int16_t glyphWidth(U8G2_FOR_ADAFRUIT_GFX& font, const uint8_t* primary,
     // glyphs and both Hangul blocks without silently dropping weather names.
     const uint8_t* const fallbacks[] = {
         u8g2_font_unifont_t_gb2312,
+        // The compact WQY/GB2312 fonts omit punctuation such as the middle
+        // dot used between artist/album and temperature/condition.  The
+        // symbols font is already linked for the replacement-box glyph and
+        // also covers degree and multiplication signs, so using it here adds
+        // coverage without replacing the UI font or increasing runtime RAM.
+        u8g2_font_unifont_t_symbols,
         u8g2_font_unifont_t_korean1,
         u8g2_font_unifont_t_korean2,
         u8g2_font_b16_t_japanese3,
@@ -300,11 +420,16 @@ void TftFrameRenderer::render(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font
                                const NavState& state, bool wifiConnected, bool bleConnected,
                                const String& ip, uint16_t port, unsigned long silenceMs,
                                const WeatherState& weather,
-                                TftViewMode viewMode, MediaControlCommand pressedControl,
+                                 TftViewMode viewMode, MediaControlCommand pressedControl,
                                  int8_t pressedSettingsRow, bool phoneDetail,
                                  uint8_t phoneDetailScroll, bool autoMode,
                                  uint8_t settingsPage, int16_t homeScroll,
-                                 int16_t musicLyricOffsetY) {
+                                 bool weatherRetryPressed, MusicPageStyle musicPageStyle,
+                                 const DisplayPreferences* preferences,
+                                 const TftRenderRegions* regions) {
+  const DisplayPreferences defaultPreferences;
+  const DisplayPreferences& settings = preferences == nullptr
+      ? defaultPreferences : *preferences;
   if (state.music.active) {
     AlbumArtCache::instance().request(state.music.coverUrl, wifiConnected);
   }
@@ -312,27 +437,28 @@ void TftFrameRenderer::render(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font
   const bool fresh = connected && silenceMs <= AMAP_STANDBY_MS;
   if (viewMode == TftViewMode::Home) {
     renderHome(display, font, state, wifiConnected, bleConnected, ip, port, autoMode,
-               homeScroll, weather);
+               homeScroll, weather, regions);
     return;
   }
   if (viewMode == TftViewMode::Weather) {
-    renderWeather(display, font, weather, wifiConnected);
+    renderWeather(display, font, weather, wifiConnected, weatherRetryPressed, regions);
     return;
   }
   if (viewMode == TftViewMode::AutoStatus) {
     renderAutoStatus(display, font, state, wifiConnected, bleConnected, ip, port, autoMode,
-                     pressedSettingsRow == 0);
+                     pressedSettingsRow == 0, regions);
     return;
   }
   if (viewMode == TftViewMode::Settings) {
     renderSettings(display, font, wifiConnected, bleConnected, ip, port, pressedSettingsRow,
-                   settingsPage);
+                   settingsPage, settings, regions);
     return;
   }
   if (viewMode == TftViewMode::Auto) {
     // TftRenderer normally resolves automatic mode before it reaches this
     // function. Keeping a useful fallback here makes preview rendering safe.
-    renderHome(display, font, state, wifiConnected, bleConnected, ip, port, true, 0, weather);
+    renderHome(display, font, state, wifiConnected, bleConnected, ip, port, true, 0,
+               weather, regions);
     return;
   }
   if (viewMode == TftViewMode::Navigation) {
@@ -340,9 +466,9 @@ void TftFrameRenderer::render(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font
       renderStandby(display, font, "暂无导航数据", "左右滑动可切换界面",
                     wifiConnected, bleConnected, ip, port);
     } else if (state.mode == "cruise") {
-      renderCruise(display, font, state);
+      renderCruise(display, font, state, regions);
     } else {
-      renderNavigation(display, font, state);
+      renderNavigation(display, font, state, regions);
     }
     return;
   }
@@ -351,7 +477,7 @@ void TftFrameRenderer::render(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font
       renderStandby(display, font, "暂无音乐数据", "打开任意音乐播放器后自动更新",
                     wifiConnected, bleConnected, ip, port);
     } else {
-      renderMusic(display, font, state.music, pressedControl, musicLyricOffsetY);
+      renderMusic(display, font, state.music, pressedControl, musicPageStyle, regions);
     }
     return;
   }
@@ -365,28 +491,31 @@ void TftFrameRenderer::render(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font
     renderStandby(display, font, "手机数据已暂停", "正在等待新的 UDP / BLE 数据",
                   wifiConnected, bleConnected, ip, port);
   } else if (!state.active && state.music.active) {
-    renderMusic(display, font, state.music, pressedControl, musicLyricOffsetY);
+    renderMusic(display, font, state.music, pressedControl, musicPageStyle, regions);
   } else if (!state.active) {
     renderStandby(display, font, "等待导航或音乐", "打开高德导航或音乐播放器",
                   wifiConnected, bleConnected, ip, port);
   } else if (state.mode == "cruise") {
-    renderCruise(display, font, state);
+    renderCruise(display, font, state, regions);
     if (state.music.active) {
       drawMusicOverlay(display, font, state.music);
     }
   } else {
-    renderNavigation(display, font, state);
+    renderNavigation(display, font, state, regions);
     if (state.music.active) {
       drawMusicOverlay(display, font, state.music);
     }
   }
-  if (state.phone.notification.active) drawPhoneOverlay(display, font, state.phone);
+  if (state.phone.notification.active) {
+    drawPhoneOverlay(display, font, state.phone, settings.messageBanners);
+  }
 }
 
 void TftFrameRenderer::renderHome(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                                    const NavState& state, bool wifiConnected, bool bleConnected,
                                    const String& ip, uint16_t port, bool autoMode,
-                                   int16_t homeScroll, const WeatherState& weather) {
+                                   int16_t homeScroll, const WeatherState& weather,
+                                   const TftRenderRegions* regions) {
   drawShell(display);
   const bool connected = wifiConnected || bleConnected;
   struct AppTile {
@@ -416,6 +545,7 @@ void TftFrameRenderer::renderHome(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& 
   };
   for (const AppTile& tile : tiles) {
     const int16_t top = tile.top - homeScroll;
+    if (!regionVisible(regions, tile.left, top, 142, 62)) continue;
     display.fillRoundRect(tile.left, top, 142, 62, 14, kInfoSurface);
     drawAppIcon(display, tile.left + 10, top + 11, 38, tile.app, tile.surface);
     drawUtf8(font, tile.left + 58, top + 25, tile.title, kText);
@@ -425,6 +555,7 @@ void TftFrameRenderer::renderHome(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& 
     }
   }
 
+  if (regionVisible(regions, 12, 11, 296, 32)) {
   display.fillRoundRect(12, 11, 296, 32, 12, kInfoSurface);
   display.fillRoundRect(20, 18, 18, 18, 6, kAccent);
   display.fillTriangle(29, 21, 24, 33, 29, 30, kText);
@@ -432,18 +563,25 @@ void TftFrameRenderer::renderHome(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& 
   drawUtf8(font, 48, 31, "AMap Drive", kText);
   drawUtf8(font, 143, 31, "桌面", kMuted);
   display.fillCircle(287, 27, 4, connected ? kGreen : kYellow);
+  }
+  if (regionVisible(regions, 310, 53, 8, 146)) {
   display.fillRoundRect(312, 55, 4, 142, 2, kCapsule);
   const int16_t thumbTop = 55 + homeScroll * 110 / 33;
   display.fillRoundRect(312, thumbTop, 4, 32, 2, kAccent);
+  }
 }
 
 void TftFrameRenderer::renderWeather(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
-                                     const WeatherState& weather, bool wifiConnected) {
+                                     const WeatherState& weather, bool wifiConnected,
+                                     bool retryPressed, const TftRenderRegions* regions) {
   drawShell(display);
+  if (regionVisible(regions, 10, 8, 300, 48)) {
   drawAppIcon(display, 14, 13, 38, "weather", kOrange);
   drawUtf8(font, 63, 30, weather.city.isEmpty() ? "天气" : weather.city, kText);
   drawUtf8(font, 63, 47, weather.loading ? "正在更新" : "独立应用 · 每 30 分钟刷新", kMuted);
 
+  }
+  if (!regionVisible(regions, 8, 58, 304, 180)) return;
   if (!weather.configured) {
     display.fillRoundRect(12, 65, 296, 92, 15, kInfoSurface);
     drawUtf8(font, 28, 95, "还没有设置城市", kText);
@@ -453,10 +591,16 @@ void TftFrameRenderer::renderWeather(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GF
     return;
   }
   if (!weather.valid) {
-    display.fillRoundRect(12, 65, 296, 92, 15, kInfoSurface);
+    display.fillRoundRect(12, 65, 296, 112, 15, kInfoSurface);
     drawUtf8(font, 28, 95, wifiConnected ? "等待天气数据" : "等待 Wi-Fi 连接", kText);
     drawClipped(font, 28, 121, 250,
                 weather.error.isEmpty() ? "后台会自动重试" : weather.error, kTextSoft);
+    if (!weather.loading && !weather.error.isEmpty()) {
+      const uint16_t retrySurface = retryPressed ? kAccent : alphaBlend(kInfoSurface, kAccent, 0x60);
+      display.fillRoundRect(88, 136, 144, 30, 12, retrySurface);
+      display.drawRoundRect(88, 136, 144, 30, 12, alphaBlend(kCanvas, kText, 0x46));
+      drawUtf8(font, 126, 156, "重新获取", retryPressed ? kCanvas : kText);
+    }
     drawUtf8(font, 16, 226, "底部上划返回桌面", kMuted);
     return;
   }
@@ -498,12 +642,16 @@ void TftFrameRenderer::renderAutoStatus(Adafruit_GFX& display,
                                         U8G2_FOR_ADAFRUIT_GFX& font,
                                         const NavState& state, bool wifiConnected,
                                         bool bleConnected, const String& ip, uint16_t port,
-                                        bool autoMode, bool pressed) {
+                                        bool autoMode, bool pressed,
+                                        const TftRenderRegions* regions) {
   drawShell(display);
+  if (regionVisible(regions, 10, 8, 300, 48)) {
   drawAppIcon(display, 16, 14, 36, "auto", kAccent);
   drawUtf8(font, 63, 30, "自动", kText);
   drawUtf8(font, 63, 47, "独立应用 · 设备状态与服务", kMuted);
+  }
   const bool connected = wifiConnected || bleConnected;
+  if (regionVisible(regions, 8, 58, 304, 56)) {
   display.fillRoundRect(12, 62, 296, 48, 13, kInfoSurface);
   display.fillCircle(29, 86, 6, connected ? kGreen : kYellow);
   drawUtf8(font, 45, 82, connected ? "设备在线" : "等待设备连接", kText);
@@ -511,17 +659,22 @@ void TftFrameRenderer::renderAutoStatus(Adafruit_GFX& display,
               wifiConnected ? String("Wi-Fi · ") + ip + ":" + port
                             : (bleConnected ? "BLE 已连接 · Wi-Fi 可选" : "UDP / BLE 均未连接"),
               kTextSoft);
+  }
+  if (regionVisible(regions, 8, 116, 304, 49)) {
   display.fillRoundRect(12, 120, 296, 41, 12, kInfoSurface);
   drawUtf8(font, 25, 141, "后台服务", kMuted);
   const String source = state.active ? "导航" : (state.music.active ? "音乐" : "桌面");
   drawUtf8(font, 112, 141, source, kText);
   drawUtf8(font, 25, 157, "不会切换到导航界面", kMuted);
+  }
+  if (regionVisible(regions, 8, 173, 304, 51)) {
   const uint16_t actionSurface = autoMode ? kExitGreen : kAccent;
   display.fillRoundRect(12, 177, 296, 43, 14, pressed ? kText : actionSurface);
   drawUtf8(font, 35, 204, autoMode ? "停止自动接管" : "启动自动接管",
            pressed ? kCanvas : kText);
   drawUtf8(font, 205, 204, autoMode ? "运行中" : "未开启",
            pressed ? kCanvas : kTextSoft);
+  }
   drawUtf8(font, 16, 235, "底部上划返回桌面", kMuted);
 }
 
@@ -529,7 +682,8 @@ void TftFrameRenderer::renderPhoneSheet(Adafruit_GFX& display,
                                         U8G2_FOR_ADAFRUIT_GFX& font,
                                         const PhoneState& phone, bool wifiConnected,
                                         bool bleConnected, bool detail,
-                                        uint8_t detailScroll) {
+                                        uint8_t detailScroll,
+                                        const TftRenderRegions* regions) {
   drawShell(display);
   display.fillRoundRect(140, 8, 40, 4, 2, kMuted);
   drawUtf8(font, 16, 29, "通知中心", kText);
@@ -559,8 +713,12 @@ void TftFrameRenderer::renderPhoneSheet(Adafruit_GFX& display,
   // A compact dashboard gives the most time-sensitive information the largest
   // visual weight: weather, the next commitment, then the latest notification.
   display.fillRoundRect(12, 41, 296, 62, 14, kInfoSurface);
-  const String temperature = isnan(phone.weather.temperatureC) ? "--°" : String(phone.weather.temperatureC, 1) + "°";
+  const String temperature = isnan(phone.weather.temperatureC)
+      ? "--" : String(phone.weather.temperatureC, 1);
   drawBig(display, 24, 49, temperature, 3, kText);
+  // drawBig uses Adafruit's ASCII bitmap font, so draw the non-ASCII degree
+  // mark through the same U8g2 fallback path as every other UI string.
+  drawUtf8(font, 26 + temperature.length() * 18, 62, "°", kText);
   drawClipped(font, 115, 64, 174, phone.weather.condition.isEmpty() ? "等待定位" : phone.weather.condition, kTextSoft);
   const String weatherMeta = phone.weather.aqi >= 0 ? "AQI " + String(phone.weather.aqi) : "天气数据";
   drawUtf8(font, 115, 87, weatherMeta, phone.weather.aqi >= 0 && phone.weather.aqi > 100 ? kYellow : kAccent);
@@ -590,24 +748,27 @@ void TftFrameRenderer::renderPhoneSheet(Adafruit_GFX& display,
 
 void TftFrameRenderer::renderSettings(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                                        bool wifiConnected, bool bleConnected, const String& ip,
-                                      uint16_t port, int8_t pressedRow, uint8_t settingsPage) {
+                                      uint16_t port, int8_t pressedRow, uint8_t settingsPage,
+                                      const DisplayPreferences& settings,
+                                      const TftRenderRegions* regions) {
   drawShell(display);
-  const DisplayPreferences settings = DisplayPreferences::load();
   if (settingsPage == 0) {
     drawUtf8(font, 16, 28, "设置", kText);
     drawUtf8(font, 16, 45, "选择类别 · 底部上划返回桌面", kMuted);
-    const char* titles[] = {"显示与亮度", "自动与通知", "设备与连接"};
-    const char* details[] = {"亮度、夜间调暗", "自动接管、消息横幅", "Wi-Fi、BLE、UDP 状态"};
-    const char* icons[] = {"display", "auto", "device"};
-    const uint16_t colors[] = {kAccent, kPurple, kExitGreen};
-    for (int8_t row = 0; row < 3; ++row) {
-      const int16_t top = 58 + row * 51;
+    const char* titles[] = {"显示与亮度", "自动与通知", "设备与连接", "开发者选项"};
+    const char* details[] = {"亮度、夜间调暗、音乐风格", "自动接管、消息横幅",
+                             "Wi-Fi、BLE、UDP 状态", "帧率、渲染诊断"};
+    const char* icons[] = {"display", "auto", "device", "settings"};
+    const uint16_t colors[] = {kAccent, kPurple, kExitGreen, kYellow};
+    for (int8_t row = 0; row < 4; ++row) {
+      const int16_t top = 58 + row * 38;
+      if (!regionVisible(regions, 8, top - 4, 304, 41)) continue;
       const bool pressed = pressedRow == row;
-      display.fillRoundRect(12, top, 296, 43, 12, pressed ? kCapsule : kInfoSurface);
-      drawAppIcon(display, 21, top + 6, 31, icons[row], colors[row]);
-      drawUtf8(font, 63, top + 19, titles[row], pressed ? kText : kTextSoft);
-      drawUtf8(font, 63, top + 35, details[row], kMuted);
-      drawUtf8(font, 286, top + 26, ">", pressed ? kText : kMuted);
+      display.fillRoundRect(12, top, 296, 33, 10, pressed ? kCapsule : kInfoSurface);
+      drawAppIcon(display, 21, top + 4, 25, icons[row], colors[row]);
+      drawUtf8(font, 56, top + 16, titles[row], pressed ? kText : kTextSoft);
+      drawUtf8(font, 56, top + 29, details[row], kMuted);
+      drawUtf8(font, 286, top + 22, ">", pressed ? kText : kMuted);
     }
     display.fillRoundRect(12, 214, 296, 16, 8, kCapsule);
     drawClipped(font, 23, 226, 270,
@@ -620,7 +781,10 @@ void TftFrameRenderer::renderSettings(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_G
   drawUtf8(font, 25, 28, "< 返回", kTextSoft);
   const bool displayPage = settingsPage == 1;
   const bool behaviorPage = settingsPage == 2;
-  drawUtf8(font, 78, 28, displayPage ? "显示与亮度" : (behaviorPage ? "自动与通知" : "设备与连接"), kText);
+  const bool developerPage = settingsPage == 4;
+  drawUtf8(font, 78, 28,
+           displayPage ? "显示与亮度" : (behaviorPage ? "自动与通知" :
+           (developerPage ? "开发者选项" : "设备与连接")), kText);
   drawUtf8(font, 16, 52, "底部上划返回桌面", kMuted);
   if (settingsPage == 3) {
     const String statuses[] = {
@@ -631,6 +795,7 @@ void TftFrameRenderer::renderSettings(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_G
     };
     for (int8_t row = 0; row < 4; ++row) {
       const int16_t top = 65 + row * 36;
+      if (!regionVisible(regions, 8, top - 4, 304, 37)) continue;
       display.fillRoundRect(12, top, 296, 29, 10, kInfoSurface);
       display.fillCircle(28, top + 14, 4,
                          row == 0 ? (wifiConnected ? kGreen : kMuted) :
@@ -640,14 +805,36 @@ void TftFrameRenderer::renderSettings(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_G
     return;
   }
 
+  if (developerPage) {
+    if (!regionVisible(regions, 8, 64, 304, 96)) return;
+    const bool pressed = pressedRow == 0;
+    display.fillRoundRect(12, 70, 296, 35, 11, pressed ? kCapsule : kInfoSurface);
+    display.fillCircle(29, 87, 5, pressed ? kText : kYellow);
+    drawUtf8(font, 45, 93, "显示帧率", pressed ? kText : kTextSoft);
+    display.fillRoundRect(238, 77, 57, 21, 10, pressed ? kText : kSurface);
+    drawUtf8(font, 248, 93, settings.showFrameRate ? "开启" : "关闭",
+             pressed ? kCanvas : kTextSoft);
+    drawUtf8(font, 16, 132, "在右上角显示实时渲染 FPS", kMuted);
+    drawUtf8(font, 16, 151, "开启后会持续合成画面，便于性能诊断", kMuted);
+    return;
+  }
+
   const String labels[] = {displayPage ? "亮度" : "自动模式",
-                           displayPage ? "夜间调暗" : "消息横幅"};
+                           displayPage ? "夜间调暗" : "消息横幅",
+                           "音乐风格"};
   const String values[] = {displayPage ? String(settings.brightness) + "%"
                                         : (settings.autoView ? "开启" : "关闭"),
                            displayPage ? (settings.nightDim ? "开启" : "关闭")
-                                       : (settings.messageBanners ? "开启" : "关闭")};
-  for (int8_t row = 0; row < 2; ++row) {
+                                       : (settings.messageBanners ? "开启" : "关闭"),
+                           settings.musicPageStyle == MusicPageStyle::PipWindow
+                               ? "PiPWindow"
+                               : (settings.musicPageStyle == MusicPageStyle::RefinedNowPlaying
+                                      ? "Refined"
+                                      : "标准")};
+  const int8_t rowCount = displayPage ? 3 : 2;
+  for (int8_t row = 0; row < rowCount; ++row) {
     const int16_t top = 70 + row * 42;
+    if (!regionVisible(regions, 8, top - 4, 304, 43)) continue;
     const bool pressed = pressedRow == row;
     display.fillRoundRect(12, top, 296, 35, 11, pressed ? kCapsule : kInfoSurface);
     display.fillCircle(29, top + 17, 5, pressed ? kText : kAccent);
@@ -658,7 +845,7 @@ void TftFrameRenderer::renderSettings(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_G
 }
 
 void TftFrameRenderer::drawPhoneOverlay(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
-                                        const PhoneState& phone) {
+                                         const PhoneState& phone, bool messageBanners) {
   const bool call = phone.notification.kind == "call";
   if (call) {
     display.fillScreen(kCanvas);
@@ -666,7 +853,7 @@ void TftFrameRenderer::drawPhoneOverlay(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT
     drawClipped(font, 26, 112, 268, phone.notification.sender.isEmpty() ? phone.notification.title : phone.notification.sender, kText);
     drawClipped(font, 26, 145, 268, phone.notification.body, kTextSoft);
     drawUtf8(font, 26, 208, "来电结束后自动返回", kMuted);
-  } else if (DisplayPreferences::load().messageBanners && phone.receivedAt != 0 &&
+  } else if (messageBanners && phone.receivedAt != 0 &&
              millis() - phone.receivedAt <= 6000UL) {
     display.fillRoundRect(8, 8, 304, 62, 10, kInfoSurface);
     drawAppIcon(display, 16, 19, 38, phone.notification.app, kAccent);
@@ -765,6 +952,8 @@ void TftFrameRenderer::drawGestureHint(Adafruit_GFX& display,
     label = "天气";
   } else if (viewMode == TftViewMode::Settings) {
     label = "设置";
+  } else if (viewMode == TftViewMode::AutoStatus) {
+    label = "自动";
   }
   constexpr int16_t left = 112;
   constexpr int16_t top = 215;
@@ -774,10 +963,34 @@ void TftFrameRenderer::drawGestureHint(Adafruit_GFX& display,
   drawUtf8(font, left + 31, top + 15, label, kTextSoft);
 }
 
+void TftFrameRenderer::drawFrameRate(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
+                                     uint16_t framesPerSecond) {
+  constexpr int16_t left = 258;
+  constexpr int16_t top = 5;
+  display.fillRoundRect(left, top, 57, 18, 7, kCanvas);
+  display.drawRoundRect(left, top, 57, 18, 7, kAccent);
+  font.setFont(u8g2_font_6x10_tf);
+  drawUtf8(font, left + 6, top + 13, String("FPS ") + framesPerSecond, kText);
+  // The renderer shares one U8g2 object between frames.  Restore the normal
+  // CJK font and transparent text mode so this debug overlay never leaks its
+  // ASCII font or opaque background into the next screen.
+  font.setFont(u8g2_font_wqy12_t_gb2312);
+  font.setFontMode(1);
+}
+
 void TftFrameRenderer::renderMusic(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                                      const MusicState& music,
                                      MediaControlCommand pressedControl,
-                                     int16_t lyricOffsetY) {
+                                     MusicPageStyle pageStyle,
+                                     const TftRenderRegions* regions) {
+  if (pageStyle == MusicPageStyle::PipWindow) {
+    renderMusicPipWindow(display, font, music, regions);
+    return;
+  }
+  if (pageStyle == MusicPageStyle::RefinedNowPlaying) {
+    renderMusicRefinedNowPlaying(display, font, music, pressedControl, regions);
+    return;
+  }
   const unsigned long now = millis();
   const int64_t positionMs = music.positionAt(now);
   const int wordProgressPermille = music.wordProgressAt(now);
@@ -787,9 +1000,8 @@ void TftFrameRenderer::renderMusic(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX&
   const uint16_t distantLyric = alphaBlend(kCanvas, kText, 0x3A);
   display.fillScreen(kCanvas);
 
-  // Refined Now Playing composition scaled to 320x240: album identity on the
-  // left, a vertically focused lyric stage on the right, and a dim album-tone
-  // atmosphere behind both. No card chrome is used on the music screen.
+  // Firmware-standard composition: album identity on the left, a vertically
+  // focused lyric stage on the right, and a restrained album-tone atmosphere.
   display.fillCircle(44, 16, 92, atmosphere);
   display.fillCircle(302, 226, 116, alphaBlend(kCanvas, accent, 0x18));
   display.fillTriangle(0, 240, 172, 240, 0, 112,
@@ -799,6 +1011,7 @@ void TftFrameRenderer::renderMusic(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX&
   constexpr int16_t coverTop = 14;
   constexpr int16_t coverSize = 126;
   const uint16_t coverBase = alphaBlend(kSurface, accent, 0x72);
+  if (regionVisible(regions, coverLeft, coverTop, coverSize + 2, coverSize + 2)) {
   if (!AlbumArtCache::instance().draw(display, coverLeft, coverTop)) {
     display.fillRoundRect(coverLeft, coverTop, coverSize, coverSize, 12, coverBase);
     display.fillCircle(coverLeft + 63, coverTop + 63, 48,
@@ -818,7 +1031,9 @@ void TftFrameRenderer::renderMusic(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX&
                           AlbumArtCache::SIZE, 10,
                           alphaBlend(kCanvas, kText, 0x42));
   }
+  }
 
+  if (regionVisible(regions, 10, 145, 136, 40)) {
   drawClipped(font, 15, 160, 126,
               music.title.isEmpty()
                   ? (music.sourceName.isEmpty() ? "音乐播放器" : music.sourceName)
@@ -828,10 +1043,12 @@ void TftFrameRenderer::renderMusic(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX&
     byline += (byline.isEmpty() ? "" : " · ") + music.album;
   }
   drawClipped(font, 15, 179, 126, byline, idleLyric);
+  }
 
   constexpr int16_t progressLeft = 15;
   constexpr int16_t progressTop = 190;
   constexpr int16_t progressWidth = 126;
+  if (regionVisible(regions, 10, 184, 136, 15)) {
   display.fillRoundRect(progressLeft, progressTop, progressWidth, 3, 1,
                         alphaBlend(kCanvas, kText, 0x25));
   if (music.durationMs > 0) {
@@ -841,9 +1058,11 @@ void TftFrameRenderer::renderMusic(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX&
       display.fillRoundRect(progressLeft, progressTop, filled, 3, 1, kText);
     }
   }
+  }
 
   // 42 px touch targets provide direct press feedback while keeping the
   // transport controls visually restrained.
+  if (regionVisible(regions, 10, 196, 136, 44)) {
   const uint16_t previousColor = pressedControl == MediaControlCommand::Previous
                                      ? accent : idleLyric;
   const uint16_t nextColor = pressedControl == MediaControlCommand::Next
@@ -869,35 +1088,260 @@ void TftFrameRenderer::renderMusic(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX&
   const String duration = formatTime(music.durationMs);
   drawUtf8(font, 141 - textWidth(font, duration), 238,
            duration, distantLyric);
+  }
 
   constexpr int16_t lyricLeft = 163;
   constexpr int16_t lyricWidth = 147;
-  const int16_t lyricStageTop = 52 + lyricOffsetY;
+  constexpr int16_t lyricStageTop = 48;
+  if (regionVisible(regions, 158, 39, 157, 121)) {
+  // Give each line its own breathing room: previous, active/translation and
+  // next lyric use three distinct vertical bands instead of a dense stack.
   drawClipped(font, lyricLeft, lyricStageTop, lyricWidth, music.previousLyric, distantLyric);
 
   const String lyric = music.lyric.isEmpty() ? "暂无歌词" : music.lyric;
   font.setFont(u8g2_font_wqy16_t_gb2312);
   if (music.highlightedLyric.isEmpty() && music.currentWord.isEmpty()) {
-    drawTimedScrollingLine(font, lyricLeft, lyricStageTop + 26, lyricWidth, lyric,
+    drawTimedScrollingLine(font, lyricLeft, lyricStageTop + 46, lyricWidth, lyric,
                            positionMs, music.lineStartMs,
                            music.lineDurationMs, kText);
   } else {
-    drawKaraokeLine(font, lyricLeft, lyricStageTop + 26, lyricWidth, lyric,
+    drawKaraokeLine(font, lyricLeft, lyricStageTop + 46, lyricWidth, lyric,
                     music.highlightedLyric, music.currentWord,
                     wordProgressPermille, idleLyric, kText);
   }
   font.setFont(u8g2_font_wqy12_t_gb2312);
   if (!music.translatedLyric.isEmpty()) {
-    drawTimedScrollingLine(font, lyricLeft, lyricStageTop + 47, lyricWidth,
+    drawTimedScrollingLine(font, lyricLeft, lyricStageTop + 70, lyricWidth,
                            music.translatedLyric, positionMs,
                            music.lineStartMs, music.lineDurationMs,
                            alphaBlend(kCanvas, kText, 0x82));
   }
-  drawClipped(font, lyricLeft, lyricStageTop + 70, lyricWidth, music.nextLyric, distantLyric);
-  if (!music.nextLyric.isEmpty()) {
-    display.fillCircle(lyricLeft, lyricStageTop + 86, 2, alphaBlend(kCanvas, kText, 0x28));
-    display.fillCircle(lyricLeft + 8, lyricStageTop + 86, 2, alphaBlend(kCanvas, kText, 0x1C));
-    display.fillCircle(lyricLeft + 16, lyricStageTop + 86, 2, alphaBlend(kCanvas, kText, 0x12));
+  drawClipped(font, lyricLeft, lyricStageTop + 104, lyricWidth, music.nextLyric, distantLyric);
+  }
+}
+
+void TftFrameRenderer::renderMusicRefinedNowPlaying(
+    Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
+    const MusicState& music, MediaControlCommand pressedControl,
+    const TftRenderRegions* regions) {
+  const unsigned long now = millis();
+  const int64_t positionMs = music.positionAt(now);
+  const uint16_t fallbackTone = musicAccent(music.songId);
+  const uint16_t albumTone = AlbumArtCache::instance().dominantColor(fallbackTone);
+  const uint16_t backdrop = alphaBlend(kCanvas, albumTone, 0x54);
+  const uint16_t strong = alphaBlend(backdrop, kText, 0xEE);
+  const uint16_t medium = alphaBlend(backdrop, kText, 0x92);
+  const uint16_t faint = alphaBlend(backdrop, kText, 0x52);
+  const uint16_t accent = alphaBlend(albumTone, kText, 0x48);
+
+  display.fillScreen(backdrop);
+  if (!AlbumArtCache::instance().drawBlurred(display, 0, 0, display.width(),
+                                              display.height(), 18, 104, kCanvas)) {
+    display.fillScreen(backdrop);
+  }
+
+  // The reference page keeps album identity and metadata on the left while a
+  // vertically focused lyric rail occupies the right half. Its cover-derived
+  // background is intentionally edge-to-edge rather than enclosed in a card.
+  constexpr int16_t coverLeft = 18;
+  constexpr int16_t coverTop = 18;
+  constexpr int16_t coverSize = 116;
+  if (regionVisible(regions, 12, 12, 132, 130)) {
+    display.fillRoundRect(coverLeft + 5, coverTop + 7, coverSize, coverSize, 12,
+                          alphaBlend(kCanvas, albumTone, 0x64));
+    if (!AlbumArtCache::instance().draw(display, coverLeft, coverTop, coverSize)) {
+      display.fillRoundRect(coverLeft, coverTop, coverSize, coverSize, 12,
+                            alphaBlend(kCanvas, albumTone, 0xB0));
+      display.drawCircle(coverLeft + 58, coverTop + 58, 38, medium);
+      display.fillCircle(coverLeft + 58, coverTop + 58, 7, strong);
+    }
+    display.drawRoundRect(coverLeft, coverTop, coverSize, coverSize, 12,
+                          alphaBlend(albumTone, kText, 0x58));
+  }
+
+  if (regionVisible(regions, 12, 140, 136, 43)) {
+    font.setFont(u8g2_font_wqy16_t_gb2312);
+    drawClipped(font, 18, 158, 122,
+                music.title.isEmpty() ? "音乐播放器" : music.title, strong);
+    font.setFont(u8g2_font_wqy12_t_gb2312);
+    String byline = music.artist;
+    if (!music.album.isEmpty()) byline += (byline.isEmpty() ? "" : " · ") + music.album;
+    drawClipped(font, 18, 179, 122, byline, medium);
+  }
+
+  constexpr int16_t lyricLeft = 158;
+  constexpr int16_t lyricWidth = 150;
+  if (regionVisible(regions, 151, 22, 164, 160)) {
+    int64_t elapsed = music.lineStartMs >= 0 ? positionMs - music.lineStartMs : 500;
+    auto staggeredEase = [elapsed](int delayMs) {
+      const float t = constrain(static_cast<float>(elapsed - delayMs) / 500.0f,
+                                0.0f, 1.0f);
+      const float remaining = 1.0f - t;
+      return 1.0f - remaining * remaining * remaining;
+    };
+    const float previousEase = staggeredEase(0);
+    const float currentEase = staggeredEase(50);
+    const float nextEase = staggeredEase(100);
+    const int16_t previousBaseline = 55 + static_cast<int16_t>((1.0f - previousEase) * 43.0f);
+    const int16_t currentBaseline = 98 + static_cast<int16_t>((1.0f - currentEase) * 43.0f);
+    const int16_t nextBaseline = 145 + static_cast<int16_t>((1.0f - nextEase) * 35.0f);
+
+    font.setFont(u8g2_font_wqy12_t_gb2312);
+    drawClipped(font, lyricLeft, previousBaseline, lyricWidth,
+                music.previousLyric, alphaBlend(backdrop, kText,
+                    static_cast<uint8_t>(0x42 + previousEase * 0x24)));
+
+    const String lyric = music.lyric.isEmpty() ? "暂无歌词" : music.lyric;
+    font.setFont(u8g2_font_wqy16_t_gb2312);
+    const uint16_t activeLine = alphaBlend(medium, strong,
+        static_cast<uint8_t>(currentEase * 255.0f));
+    if (music.highlightedLyric.isEmpty() && music.currentWord.isEmpty()) {
+      drawTimedScrollingLine(font, lyricLeft, currentBaseline, lyricWidth, lyric,
+                             positionMs, music.lineStartMs,
+                             music.lineDurationMs, activeLine);
+    } else {
+      drawKaraokeLine(font, lyricLeft, currentBaseline, lyricWidth, lyric,
+                      music.highlightedLyric, music.currentWord,
+                      music.wordProgressAt(now), medium, strong);
+    }
+    font.setFont(u8g2_font_wqy12_t_gb2312);
+    if (!music.translatedLyric.isEmpty()) {
+      drawTimedScrollingLine(font, lyricLeft, currentBaseline + 22, lyricWidth,
+                             music.translatedLyric, positionMs,
+                             music.lineStartMs, music.lineDurationMs, medium);
+    }
+    drawClipped(font, lyricLeft, nextBaseline, lyricWidth, music.nextLyric,
+                alphaBlend(backdrop, kText,
+                    static_cast<uint8_t>(0x2E + nextEase * 0x20)));
+  }
+
+  if (regionVisible(regions, 0, 184, 320, 56)) {
+    display.fillRect(0, 187, display.width(), 53, alphaBlend(kCanvas, albumTone, 0x38));
+    constexpr int16_t progressLeft = 15;
+    constexpr int16_t progressWidth = 290;
+    display.fillRoundRect(progressLeft, 190, progressWidth, 3, 1, faint);
+    if (music.durationMs > 0) {
+      const int64_t bounded = min<int64_t>(max<int64_t>(0, positionMs), music.durationMs);
+      const int16_t filled = static_cast<int16_t>(bounded * progressWidth / music.durationMs);
+      if (filled > 0) display.fillRoundRect(progressLeft, 190, filled, 3, 1, accent);
+    }
+    drawUtf8(font, 15, 210, formatTime(positionMs), medium);
+    const String duration = formatTime(music.durationMs);
+    drawUtf8(font, 305 - textWidth(font, duration), 210, duration, medium);
+
+    const uint16_t previousColor = pressedControl == MediaControlCommand::Previous
+        ? strong : medium;
+    const uint16_t nextColor = pressedControl == MediaControlCommand::Next
+        ? strong : medium;
+    if (pressedControl == MediaControlCommand::Previous) {
+      display.fillCircle(119, 218, 17, alphaBlend(kCanvas, accent, 0x70));
+    }
+    if (pressedControl == MediaControlCommand::Next) {
+      display.fillCircle(201, 218, 17, alphaBlend(kCanvas, accent, 0x70));
+    }
+    display.fillTriangle(115, 218, 123, 212, 123, 224, previousColor);
+    const uint16_t playSurface = pressedControl == MediaControlCommand::PlayPause
+        ? strong : accent;
+    display.fillCircle(160, 218, 17, playSurface);
+    if (music.playing) {
+      display.fillRect(154, 211, 4, 14, kCanvas);
+      display.fillRect(162, 211, 4, 14, kCanvas);
+    } else {
+      display.fillTriangle(156, 210, 156, 226, 168, 218, kCanvas);
+    }
+    display.fillTriangle(197, 212, 197, 224, 205, 218, nextColor);
+  }
+  font.setFont(u8g2_font_wqy12_t_gb2312);
+}
+
+void TftFrameRenderer::renderMusicPipWindow(Adafruit_GFX& display,
+                                            U8G2_FOR_ADAFRUIT_GFX& font,
+                                            const MusicState& music,
+                                            const TftRenderRegions* regions) {
+  // PiPWindow's visual language: album-derived blurred wash outside a floating
+  // 2:1 information card, a compact cover at the leading edge, and lyrics that
+  // diminish line by line instead of a dedicated full-screen lyric stage.
+  const uint16_t fallbackTone = musicAccent(music.songId);
+  const uint16_t albumTone = AlbumArtCache::instance().dominantColor(fallbackTone);
+  const uint16_t outside = alphaBlend(kCanvas, albumTone, 0x44);
+  const uint16_t panel = alphaBlend(albumTone, kText, 0x68);
+  const uint16_t panelStroke = alphaBlend(albumTone, kCanvas, 0x54);
+  const uint16_t textStrong = alphaBlend(kText, albumTone, 0x18);
+  const uint16_t textMedium = alphaBlend(kText, albumTone, 0x68);
+  const uint16_t textFaint = alphaBlend(kText, albumTone, 0xA8);
+  const unsigned long now = millis();
+  const int64_t positionMs = music.positionAt(now);
+
+  display.fillScreen(outside);
+  if (!AlbumArtCache::instance().drawBlurred(display, 0, 0, display.width(), display.height(), 20)) {
+    display.fillScreen(outside);
+  }
+  // The card intentionally stands apart from the rest of the firmware UI.
+  // It mirrors the reference plugin's floating window rather than our shell.
+  display.fillRoundRect(9, 13, 302, 217, 13, panel);
+  display.drawRoundRect(9, 13, 302, 217, 13, panelStroke);
+
+  constexpr int16_t coverLeft = 18;
+  constexpr int16_t coverTop = 23;
+  constexpr int16_t coverSize = 80;
+  if (regionVisible(regions, coverLeft, coverTop, coverSize + 2, coverSize + 2)) {
+  if (!AlbumArtCache::instance().draw(display, coverLeft, coverTop, coverSize)) {
+    display.fillRoundRect(coverLeft, coverTop, coverSize, coverSize, 8,
+                          alphaBlend(panel, albumTone, 0x42));
+    display.drawCircle(coverLeft + coverSize / 2, coverTop + coverSize / 2, 26,
+                       alphaBlend(textStrong, panel, 0x5C));
+    display.fillCircle(coverLeft + coverSize / 2, coverTop + coverSize / 2, 5, textStrong);
+  }
+  display.drawRoundRect(coverLeft, coverTop, coverSize, coverSize, 8,
+                        alphaBlend(panelStroke, kText, 0x72));
+  }
+
+  constexpr int16_t infoLeft = 111;
+  constexpr int16_t infoWidth = 184;
+  if (regionVisible(regions, 102, 20, 194, 70)) {
+  font.setFont(u8g2_font_wqy16_t_gb2312);
+  drawClipped(font, infoLeft, 44, infoWidth,
+              music.title.isEmpty() ? "音乐播放器" : music.title, textStrong);
+  font.setFont(u8g2_font_wqy12_t_gb2312);
+  drawClipped(font, infoLeft, 64, infoWidth,
+              music.album.isEmpty() ? music.artist : music.album, textMedium);
+  drawClipped(font, infoLeft, 83, infoWidth, music.artist, textMedium);
+  }
+
+  if (regionVisible(regions, 14, 101, 284, 29)) {
+  const String time = formatTime(positionMs) + " / " + formatTime(music.durationMs);
+  drawUtf8(font, 18, 116, time, textMedium);
+  constexpr int16_t progressLeft = 102;
+  constexpr int16_t progressTop = 105;
+  constexpr int16_t progressWidth = 193;
+  display.fillRect(progressLeft, progressTop, progressWidth, 2, textFaint);
+  if (music.durationMs > 0) {
+    const int64_t bounded = min<int64_t>(max<int64_t>(0, positionMs), music.durationMs);
+    const int16_t filled = static_cast<int16_t>(bounded * progressWidth / music.durationMs);
+    if (filled > 0) display.fillRect(progressLeft, progressTop, filled, 2, textStrong);
+  }
+  display.drawFastHLine(18, 127, 277, alphaBlend(panelStroke, kCanvas, 0x60));
+  }
+
+  if (regionVisible(regions, 14, 132, 284, 94)) {
+  const String lyric = music.lyric.isEmpty() ? "暂无歌词" : music.lyric;
+  font.setFont(u8g2_font_wqy16_t_gb2312);
+  if (music.highlightedLyric.isEmpty() && music.currentWord.isEmpty()) {
+    drawTimedScrollingLine(font, 18, 155, 276, lyric, positionMs, music.lineStartMs,
+                           music.lineDurationMs, textStrong);
+  } else {
+    drawKaraokeLine(font, 18, 155, 276, lyric, music.highlightedLyric, music.currentWord,
+                    music.wordProgressAt(now), textMedium, textStrong);
+  }
+  font.setFont(u8g2_font_wqy12_t_gb2312);
+  if (!music.translatedLyric.isEmpty()) {
+    drawTimedScrollingLine(font, 18, 174, 276, music.translatedLyric, positionMs,
+                           music.lineStartMs, music.lineDurationMs, textMedium);
+  }
+  font.setFont(u8g2_font_wqy16_t_gb2312);
+  drawClipped(font, 18, 202, 276, music.nextLyric, textMedium);
+  font.setFont(u8g2_font_wqy12_t_gb2312);
+  drawClipped(font, 18, 220, 276, music.previousLyric, textFaint);
   }
 }
 
@@ -986,10 +1430,12 @@ void TftFrameRenderer::renderStandby(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GF
 
 void TftFrameRenderer::renderNavigation(Adafruit_GFX& display,
                                          U8G2_FOR_ADAFRUIT_GFX& font,
-                                         const NavState& state) {
+                                         const NavState& state,
+                                         const TftRenderRegions* regions) {
   drawShell(display);
 
   // layout_floating_navi_normal.xml: a 60dp exit tile within a 100dp header.
+  if (regionVisible(regions, 7, 5, 210, 90)) {
   display.fillRoundRect(10, 10, 60, 80, 8, kExitGreen);
   drawTurnIcon(display, state.turn.icon, 10, 20, kText, kExitGreen);
   const String distance = numericPart(state.turn.distanceText);
@@ -1000,43 +1446,63 @@ void TftFrameRenderer::renderNavigation(Adafruit_GFX& display,
   }
   drawClipped(font, 80, 84, 134, state.turn.road.isEmpty() ? state.road : state.turn.road,
               kText);
+  }
 
+  if (regionVisible(regions, 205, 3, 115, 116)) {
   if (state.lightCount > 0) {
     drawNavigationTrafficPill(display, state);
   } else if (state.camera.distance >= 0) {
     drawCameraPill(display, font, state, 214, 5, 58);
   }
   drawSpeedLimitSign(display, state, 294, 30);
+  }
 
   int16_t nextTop = 100;
   if (state.lane.count > 0) {
+    if (regionVisible(regions, 7, 94, 306, 70)) {
     drawLanes(display, state, nextTop);
+    }
     nextTop += 48;
   }
+  if (regionVisible(regions, 7, 96, 306, 75)) {
   drawTmc(display, state, 10, nextTop + 2, display.width() - 20);
+  }
+  if (regionVisible(regions, 7, 116, 306, 120)) {
   drawNavigationInfo(display, font, state, nextTop + 18);
+  }
 }
 
 void TftFrameRenderer::renderCruise(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
-                                    const NavState& state) {
+                                    const NavState& state,
+                                    const TftRenderRegions* regions) {
   drawShell(display);
 
   // layout_floating_cruise_normal.xml: 40sp speed, road name, then optional
   // traffic-light row and the native lane-line strip.
+  if (regionVisible(regions, 7, 5, 205, 52)) {
   drawBig(display, 10, 10, state.speed.current >= 0 ? String(state.speed.current) : "--", 5,
           kAccent);
   display.fillRect(76, 14, 1, 32, alphaBlend(kSurface, kText, 0x33));
   drawClipped(font, 87, 39, 120, state.road, kText);
+  }
 
   int16_t laneTop = 60;
   if (state.lightCount > 0) {
+    if (regionVisible(regions, 205, 3, 115, 116)) {
     drawCruiseTrafficPills(display, state, 58);
+    }
     laneTop = 114;
   } else if (state.camera.distance >= 0) {
+    if (regionVisible(regions, 205, 3, 115, 116)) {
     drawCameraPill(display, font, state, 211, 8, 61);
+    }
   }
+  if (regionVisible(regions, 205, 3, 115, 116)) {
   drawSpeedLimitSign(display, state, 294, 33);
+  }
+  if (regionVisible(regions, 7, 54, 306, 128)) {
   drawLanes(display, state, laneTop);
+  }
 }
 
 void TftFrameRenderer::drawNavigationInfo(Adafruit_GFX& display,
@@ -1137,23 +1603,31 @@ void TftFrameRenderer::drawKaraokeLine(U8G2_FOR_ADAFRUIT_GFX& font, int16_t x,
               visibleHighlight.isEmpty() ? activeColor : idleColor);
   if (visibleHighlight.isEmpty()) return;
 
-  const bool currentWordAligned = !currentWord.isEmpty() &&
-                                  visibleHighlight.endsWith(currentWord);
+  const int currentWordOffset = currentWord.isEmpty()
+      ? -1 : visibleHighlight.lastIndexOf(currentWord);
+  String trailingHighlight = currentWordOffset < 0
+      ? String("x")
+      : visibleHighlight.substring(currentWordOffset + currentWord.length());
+  trailingHighlight.trim();
+  const bool currentWordAligned = currentWordOffset >= 0 && trailingHighlight.isEmpty();
   if (!currentWordAligned) {
     drawClipped(font, x, baseline, maxWidth, visibleHighlight, activeColor);
     return;
   }
 
-  const String completed = visibleHighlight.substring(
-      0, visibleHighlight.length() - currentWord.length());
+  const String completed = visibleHighlight.substring(0, currentWordOffset);
   drawClipped(font, x, baseline, maxWidth, completed, activeColor);
   const int16_t wordX = x + textWidth(font, completed);
   const int16_t wordWidth = textWidth(font, currentWord);
   if (wordProgressPermille <= 0) return;
-  // Drawing through a temporary clipping canvas can make bitmap fallback
-  // glyphs opaque on some panels, leaving a colored rectangle behind them.
-  // Highlight the active word as one transparent glyph run instead.
-  drawClipped(font, wordX, baseline, wordWidth, currentWord, activeColor);
+  // Keep fallback glyphs transparent while still animating every YRC word.
+  // Blending the glyph color at the display's 25 FPS cadence avoids the hard
+  // whole-word flash and the opaque rectangles produced by bitmap clipping.
+  const int progress = constrain(wordProgressPermille, 0, 1000);
+  const int eased = progress * progress * (3000 - 2 * progress) / 1000000;
+  const uint16_t currentColor = alphaBlend(
+      idleColor, activeColor, static_cast<uint8_t>(eased * 255 / 1000));
+  drawClipped(font, wordX, baseline, wordWidth, currentWord, currentColor);
 }
 
 void TftFrameRenderer::drawTimedScrollingLine(U8G2_FOR_ADAFRUIT_GFX& font,

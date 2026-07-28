@@ -84,6 +84,7 @@
 #define AMAP_TFT_NATIVE_HEIGHT 320
 #define AMAP_TFT_WIDTH 320
 #define AMAP_TFT_HEIGHT 240
+#define AMAP_TFT_FRAME_INTERVAL_MS 16UL
 #define AMAP_TFT_ROTATION 1
 // ESP32-S3's Arduino SPI divider rounds a requested 60 MHz down to 40 MHz.
 // Use the native 80 MHz clock so this setting actually increases throughput.

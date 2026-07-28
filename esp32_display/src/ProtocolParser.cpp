@@ -2,7 +2,12 @@
 
 #include <ArduinoJson.h>
 
+namespace {
+constexpr unsigned long kActiveMusicSourceHoldMs = 1500UL;
+}
+
 bool ProtocolParser::parse(const char* payload, size_t length, NavState& target, String& error) {
+  musicAcceptedLastParse = false;
   JsonDocument doc;
   DeserializationError jsonError = deserializeJson(doc, payload, length);
   if (jsonError) {
@@ -30,37 +35,9 @@ bool ProtocolParser::parse(const char* payload, size_t length, NavState& target,
   if (musicUpdate) {
     target.active = root["active"] | target.active;
     target.mode = limitText(readText(root["mode"] | target.mode.c_str()), 16);
-    JsonObject music = root["music"].as<JsonObject>();
-    target.music.active = music["active"] | false;
-    target.music.playing = music["playing"] | false;
-    target.music.source = limitText(readText(music["source"] | ""), 16);
-    target.music.sourceName = limitText(
-        readText(music["sourceName"] | "音乐播放器"), 48);
-    target.music.songId = music["songId"] | static_cast<int64_t>(-1);
-    target.music.title = limitText(readText(music["title"] | ""), 96);
-    target.music.artist = limitText(readText(music["artist"] | ""), 96);
-    target.music.album = limitText(readText(music["album"] | ""), 96);
-    target.music.coverUrl = limitText(readText(music["coverUrl"] | ""), 512);
-    target.music.positionMs = music["positionMs"] | static_cast<int64_t>(0);
-    target.music.durationMs = music["durationMs"] | static_cast<int64_t>(-1);
-    target.music.previousLyric =
-        limitText(readText(music["previousLyric"] | ""), 240);
-    target.music.lyric = limitText(readText(music["lyric"] | ""), 240);
-    target.music.translatedLyric =
-        limitText(readText(music["translatedLyric"] | ""), 240);
-    target.music.nextLyric = limitText(readText(music["nextLyric"] | ""), 240);
-    target.music.highlightedLyric =
-        limitText(readText(music["highlightedLyric"] | ""), 240);
-    target.music.currentWord =
-        limitText(readText(music["currentWord"] | ""), 72);
-    target.music.lineStartMs = music["lineStartMs"] | static_cast<int64_t>(-1);
-    target.music.lineDurationMs = music["lineDurationMs"] | static_cast<int64_t>(0);
-    target.music.wordStartMs = music["wordStartMs"] | static_cast<int64_t>(-1);
-    target.music.wordDurationMs = music["wordDurationMs"] | static_cast<int64_t>(0);
-    target.music.wordProgressPermille =
-        constrain(music["wordProgressPermille"] | 0, 0, 1000);
-    target.music.receivedAt = millis();
-    target.lastPacketAt = target.music.receivedAt;
+    const unsigned long now = millis();
+    musicAcceptedLastParse = parseMusic(root["music"].as<JsonObject>(), target.music, now);
+    target.lastPacketAt = now;
     error = "";
     return true;
   }
@@ -164,41 +141,55 @@ bool ProtocolParser::parse(const char* payload, size_t length, NavState& target,
   target.guide.nextServiceAreaDistance =
       limitText(readText(guide["nextServiceAreaDistance"] | ""), 24);
 
-  JsonObject music = root["music"].as<JsonObject>();
-  target.music.active = music["active"] | false;
-  target.music.playing = music["playing"] | false;
-  target.music.source = limitText(readText(music["source"] | ""), 16);
-  target.music.sourceName = limitText(
-      readText(music["sourceName"] | "音乐播放器"), 48);
-  target.music.songId = music["songId"] | static_cast<int64_t>(-1);
-  target.music.title = limitText(readText(music["title"] | ""), 96);
-  target.music.artist = limitText(readText(music["artist"] | ""), 96);
-  target.music.album = limitText(readText(music["album"] | ""), 96);
-  target.music.coverUrl = limitText(readText(music["coverUrl"] | ""), 512);
-  target.music.positionMs = music["positionMs"] | static_cast<int64_t>(0);
-  target.music.durationMs = music["durationMs"] | static_cast<int64_t>(-1);
-  target.music.previousLyric =
-      limitText(readText(music["previousLyric"] | ""), 240);
-  target.music.lyric = limitText(readText(music["lyric"] | ""), 240);
-  target.music.translatedLyric =
-      limitText(readText(music["translatedLyric"] | ""), 240);
-  target.music.nextLyric = limitText(readText(music["nextLyric"] | ""), 240);
-  target.music.highlightedLyric =
-      limitText(readText(music["highlightedLyric"] | ""), 240);
-  target.music.currentWord =
-      limitText(readText(music["currentWord"] | ""), 72);
-  target.music.lineStartMs = music["lineStartMs"] | static_cast<int64_t>(-1);
-  target.music.lineDurationMs = music["lineDurationMs"] | static_cast<int64_t>(0);
-  target.music.wordStartMs = music["wordStartMs"] | static_cast<int64_t>(-1);
-  target.music.wordDurationMs = music["wordDurationMs"] | static_cast<int64_t>(0);
-  target.music.wordProgressPermille =
-      constrain(music["wordProgressPermille"] | 0, 0, 1000);
+  const unsigned long now = millis();
+  musicAcceptedLastParse = parseMusic(root["music"].as<JsonObject>(), target.music, now);
   parsePhone(root["phone"].as<JsonObject>(), target.phone);
   target.alert = limitText(readText(root["alert"] | ""), 72);
   target.detail = limitText(readText(root["detail"] | ""), 120);
-  target.music.receivedAt = millis();
-  target.lastPacketAt = target.music.receivedAt;
+  target.lastPacketAt = now;
   error = "";
+  return true;
+}
+
+bool ProtocolParser::parseMusic(JsonObject music, MusicState& target, unsigned long now) {
+  if (music.isNull()) return false;
+
+  const bool incomingActive = music["active"] | false;
+  const String incomingSource = limitText(readText(music["source"] | ""), 16);
+  const bool currentSourceFresh =
+      target.active && target.receivedAt != 0 && now - target.receivedAt <= kActiveMusicSourceHoldMs;
+  const bool differentKnownSource =
+      !incomingSource.isEmpty() && !target.source.isEmpty() && incomingSource != target.source;
+
+  // Multiple transports can be connected at once. An inactive heartbeat from
+  // one source must not blank a currently active source that is still sending.
+  // A stop from the same source remains immediate, and a silent source expires
+  // naturally after the short hold window.
+  if (!incomingActive && currentSourceFresh && differentKnownSource) return false;
+
+  target.active = incomingActive;
+  target.playing = music["playing"] | false;
+  target.source = incomingSource;
+  target.sourceName = limitText(readText(music["sourceName"] | "音乐播放器"), 48);
+  target.songId = music["songId"] | static_cast<int64_t>(-1);
+  target.title = limitText(readText(music["title"] | ""), 96);
+  target.artist = limitText(readText(music["artist"] | ""), 96);
+  target.album = limitText(readText(music["album"] | ""), 96);
+  target.coverUrl = limitText(readText(music["coverUrl"] | ""), 512);
+  target.positionMs = music["positionMs"] | static_cast<int64_t>(0);
+  target.durationMs = music["durationMs"] | static_cast<int64_t>(-1);
+  target.previousLyric = limitText(readText(music["previousLyric"] | ""), 240);
+  target.lyric = limitText(readText(music["lyric"] | ""), 240);
+  target.translatedLyric = limitText(readText(music["translatedLyric"] | ""), 240);
+  target.nextLyric = limitText(readText(music["nextLyric"] | ""), 240);
+  target.highlightedLyric = limitText(readText(music["highlightedLyric"] | ""), 240);
+  target.currentWord = limitText(readText(music["currentWord"] | ""), 72);
+  target.lineStartMs = music["lineStartMs"] | static_cast<int64_t>(-1);
+  target.lineDurationMs = music["lineDurationMs"] | static_cast<int64_t>(0);
+  target.wordStartMs = music["wordStartMs"] | static_cast<int64_t>(-1);
+  target.wordDurationMs = music["wordDurationMs"] | static_cast<int64_t>(0);
+  target.wordProgressPermille = constrain(music["wordProgressPermille"] | 0, 0, 1000);
+  target.receivedAt = now;
   return true;
 }
 

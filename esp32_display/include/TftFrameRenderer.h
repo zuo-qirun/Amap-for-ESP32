@@ -7,7 +7,30 @@
 #include "NavState.h"
 #include "MediaControlCommand.h"
 #include "TftViewMode.h"
+#include "DisplayPreferences.h"
 #include "WeatherService.h"
+
+struct TftRenderRect {
+  int16_t x = 0;
+  int16_t y = 0;
+  int16_t width = 0;
+  int16_t height = 0;
+};
+
+// A small explicit region list lets the renderer restore and repaint only the
+// components whose visible dependencies changed. Coordinates remain in the
+// existing 320x240 design space; no layout or motion values are transformed.
+struct TftRenderRegions {
+  static constexpr uint8_t MAX_RECTS = 10;
+  TftRenderRect rects[MAX_RECTS];
+  uint8_t count = 0;
+
+  void clear() { count = 0; }
+  void add(int16_t x, int16_t y, int16_t width, int16_t height);
+  bool contains(int16_t x, int16_t y) const;
+  bool intersects(int16_t x, int16_t y, int16_t width, int16_t height) const;
+  uint32_t pixelCount() const;
+};
 
 // Draws the logical 320x240 frame onto any Adafruit_GFX-compatible target.
 // The hardware display and browser preview deliberately share this renderer.
@@ -22,14 +45,20 @@ public:
                      int8_t pressedSettingsRow = -1, bool phoneDetail = false,
                      uint8_t phoneDetailScroll = 0, bool autoMode = false,
                      uint8_t settingsPage = 0, int16_t homeScroll = 0,
-                     int16_t musicLyricOffsetY = 0);
+                     bool weatherRetryPressed = false,
+                     MusicPageStyle musicPageStyle = MusicPageStyle::Standard,
+                     const DisplayPreferences* preferences = nullptr,
+                     const TftRenderRegions* regions = nullptr);
   // The phone information surface is composed independently by TftRenderer so
   // it can physically follow a downward swipe over whichever app is open.
   static void renderPhoneSheet(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                                const PhoneState& phone, bool wifiConnected,
-                               bool bleConnected, bool detail, uint8_t detailScroll);
+                               bool bleConnected, bool detail, uint8_t detailScroll,
+                               const TftRenderRegions* regions = nullptr);
   static void drawGestureHint(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                               TftViewMode viewMode);
+  static void drawFrameRate(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
+                            uint16_t framesPerSecond);
   static void drawAppIcon(Adafruit_GFX& display, int16_t left, int16_t top,
                           int16_t size, const String& app, uint16_t surface);
 
@@ -38,27 +67,37 @@ private:
                             const String& title, const String& detail, bool wifiConnected,
                             bool bleConnected, const String& ip, uint16_t port);
   static void renderNavigation(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
-                               const NavState& state);
+                               const NavState& state, const TftRenderRegions* regions);
   static void renderCruise(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
-                           const NavState& state);
+                           const NavState& state, const TftRenderRegions* regions);
   static void renderMusic(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                           const MusicState& music, MediaControlCommand pressedControl,
-                          int16_t lyricOffsetY);
+                          MusicPageStyle pageStyle, const TftRenderRegions* regions);
+  static void renderMusicPipWindow(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
+                                   const MusicState& music, const TftRenderRegions* regions);
+  static void renderMusicRefinedNowPlaying(Adafruit_GFX& display,
+                                           U8G2_FOR_ADAFRUIT_GFX& font,
+                                           const MusicState& music,
+                                           MediaControlCommand pressedControl,
+                                           const TftRenderRegions* regions);
   static void renderHome(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                          const NavState& state, bool wifiConnected, bool bleConnected,
                          const String& ip, uint16_t port, bool autoMode, int16_t homeScroll,
-                         const WeatherState& weather);
+                         const WeatherState& weather, const TftRenderRegions* regions);
   static void renderWeather(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
-                            const WeatherState& weather, bool wifiConnected);
+                            const WeatherState& weather, bool wifiConnected,
+                            bool retryPressed, const TftRenderRegions* regions);
   static void renderAutoStatus(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                                const NavState& state, bool wifiConnected, bool bleConnected,
                                const String& ip, uint16_t port, bool autoMode,
-                               bool pressed);
+                               bool pressed, const TftRenderRegions* regions);
   static void renderSettings(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                              bool wifiConnected, bool bleConnected, const String& ip,
-                             uint16_t port, int8_t pressedRow, uint8_t settingsPage);
+                             uint16_t port, int8_t pressedRow, uint8_t settingsPage,
+                             const DisplayPreferences& settings,
+                             const TftRenderRegions* regions);
   static void drawPhoneOverlay(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
-                               const PhoneState& phone);
+                               const PhoneState& phone, bool messageBanners);
   static void drawMusicOverlay(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& font,
                                const MusicState& music);
   static void drawShell(Adafruit_GFX& display);

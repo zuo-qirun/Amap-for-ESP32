@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/BetterNCM/BetterNCM-Plugins/refs/heads/master/manifest-schema.json",
+  "manifest_version": 1,
+  "name": "AMap ESP32 Lyrics",
+  "slug": "amap-esp32-lyrics",
+  "version": "0.2.7",
+  "author": "Amap-for-ESP32",
+  "description": "将网易云音乐桌面端的逐行歌词通过 UDP v1 发送到 AMap ESP32 副屏。",
+  "type": "extension",
+  "betterncm_version": ">=1.0.0",
+  "requirements": ["liblyric"],
+  "loadAfter": ["liblyric"],
+  "injects": {
+    "Main": [
+      { "file": "index.js" }
+    ]
+  }
+}

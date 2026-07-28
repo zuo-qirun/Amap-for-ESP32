@@ -7,15 +7,24 @@
 #include <Adafruit_ST7789.h>
 #include <SPI.h>
 #include <U8g2_for_Adafruit_GFX.h>
+#include <driver/spi_master.h>
 #include <esp_heap_caps.h>
+#include <esp_lcd_panel_io.h>
+#include <esp_lcd_panel_ops.h>
+#include <esp_lcd_panel_vendor.h>
+#include <freertos/semphr.h>
 
 #include "HardwareSettings.h"
+#include "AlbumArtCache.h"
 #include "TftFrameRenderer.h"
 
 namespace {
 Adafruit_ST7789 st7789(AMAP_TFT_CS_PIN, AMAP_TFT_DC_PIN, AMAP_TFT_RST_PIN);
 Adafruit_ILI9341 ili9341(AMAP_TFT_CS_PIN, AMAP_TFT_DC_PIN, AMAP_TFT_RST_PIN);
 Adafruit_SPITFT* activePanel = nullptr;
+esp_lcd_panel_handle_t dmaPanel = nullptr;
+esp_lcd_panel_io_handle_t dmaPanelIo = nullptr;
+SemaphoreHandle_t dmaTransferDone = nullptr;
 U8G2_FOR_ADAFRUIT_GFX tftFont;
 U8G2_FOR_ADAFRUIT_GFX adjacentFont;
 
@@ -42,6 +51,77 @@ struct DirtyRectangle {
   int16_t width;
   int16_t height;
 };
+
+const char* renderedViewName(TftViewMode view) {
+  switch (view) {
+    case TftViewMode::Home: return "home";
+    case TftViewMode::Navigation: return "navigation";
+    case TftViewMode::Music: return "music";
+    case TftViewMode::Weather: return "weather";
+    case TftViewMode::Settings: return "settings";
+    case TftViewMode::AutoStatus: return "auto_status";
+    default: return "auto";
+  }
+}
+
+bool IRAM_ATTR onDmaColorTransferDone(esp_lcd_panel_io_handle_t,
+                                     esp_lcd_panel_io_event_data_t*, void* userContext) {
+  BaseType_t taskWoken = pdFALSE;
+  xSemaphoreGiveFromISR(static_cast<SemaphoreHandle_t>(userContext), &taskWoken);
+  return taskWoken == pdTRUE;
+}
+
+bool beginSt7789DmaPanel(bool invertColors) {
+  dmaTransferDone = xSemaphoreCreateBinary();
+  if (dmaTransferDone == nullptr) return false;
+
+  spi_bus_config_t busConfig = {};
+  busConfig.mosi_io_num = AMAP_TFT_MOSI_PIN;
+  busConfig.miso_io_num = -1;
+  busConfig.sclk_io_num = AMAP_TFT_SCLK_PIN;
+  busConfig.quadwp_io_num = -1;
+  busConfig.quadhd_io_num = -1;
+  busConfig.max_transfer_sz = kTransferBytes;
+  esp_err_t result = spi_bus_initialize(SPI2_HOST, &busConfig, SPI_DMA_CH_AUTO);
+  if (result != ESP_OK) {
+    Serial.printf("TFT DMA bus init failed: %s\n", esp_err_to_name(result));
+    return false;
+  }
+
+  esp_lcd_panel_io_spi_config_t ioConfig = {};
+  ioConfig.cs_gpio_num = AMAP_TFT_CS_PIN;
+  ioConfig.dc_gpio_num = AMAP_TFT_DC_PIN;
+  ioConfig.spi_mode = 0;
+  ioConfig.pclk_hz = AMAP_TFT_SPI_FREQUENCY;
+  ioConfig.trans_queue_depth = 1;
+  ioConfig.on_color_trans_done = onDmaColorTransferDone;
+  ioConfig.user_ctx = dmaTransferDone;
+  ioConfig.lcd_cmd_bits = 8;
+  ioConfig.lcd_param_bits = 8;
+  result = esp_lcd_new_panel_io_spi(
+      reinterpret_cast<esp_lcd_spi_bus_handle_t>(SPI2_HOST), &ioConfig, &dmaPanelIo);
+  if (result != ESP_OK) {
+    Serial.printf("TFT DMA IO init failed: %s\n", esp_err_to_name(result));
+    return false;
+  }
+
+  esp_lcd_panel_dev_config_t panelConfig = {};
+  panelConfig.reset_gpio_num = AMAP_TFT_RST_PIN;
+  panelConfig.color_space = ESP_LCD_COLOR_SPACE_RGB;
+  panelConfig.bits_per_pixel = 16;
+  result = esp_lcd_new_panel_st7789(dmaPanelIo, &panelConfig, &dmaPanel);
+  if (result != ESP_OK || esp_lcd_panel_reset(dmaPanel) != ESP_OK ||
+      esp_lcd_panel_init(dmaPanel) != ESP_OK ||
+      esp_lcd_panel_swap_xy(dmaPanel, true) != ESP_OK ||
+      esp_lcd_panel_mirror(dmaPanel, false, true) != ESP_OK ||
+      esp_lcd_panel_invert_color(dmaPanel, invertColors) != ESP_OK ||
+      esp_lcd_panel_disp_on_off(dmaPanel, true) != ESP_OK) {
+    Serial.printf("TFT DMA panel init failed: %s\n", esp_err_to_name(result));
+    dmaPanel = nullptr;
+    return false;
+  }
+  return true;
+}
 
 void hashBytes(uint32_t& hash, const void* data, size_t length) {
   const uint8_t* bytes = static_cast<const uint8_t*>(data);
@@ -74,7 +154,10 @@ void hashMusic(uint32_t& hash, const MusicState& music, bool includePosition,
   hashString(hash, music.album);
   hashString(hash, music.coverUrl);
   if (includePosition) {
-    const int64_t positionFrame = music.positionAt(now) / 33;
+    // Progress and lyric motion are intentionally capped at 25 FPS. Static
+    // metadata changes still invalidate immediately, while a 60 Hz render
+    // loop no longer lays out the same lyric frame more than once.
+    const int64_t positionFrame = music.positionAt(now) / 40;
     hashValue(hash, positionFrame);
   }
   hashValue(hash, music.durationMs);
@@ -88,10 +171,6 @@ void hashMusic(uint32_t& hash, const MusicState& music, bool includePosition,
   hashValue(hash, music.lineDurationMs);
   hashValue(hash, music.wordStartMs);
   hashValue(hash, music.wordDurationMs);
-  if (includePosition) {
-    const int progressFrame = music.wordProgressAt(now);
-    hashValue(hash, progressFrame);
-  }
 }
 
 void hashWeather(uint32_t& hash, const WeatherState& weather) {
@@ -122,70 +201,38 @@ void hashWeather(uint32_t& hash, const WeatherState& weather) {
   }
 }
 
-uint32_t frameSignature(const NavState& state, bool wifiConnected, bool bleConnected,
-                         const String& ip, uint16_t port, unsigned long silenceMs,
-                          unsigned long now, TftViewMode viewMode,
-                          int16_t dragOffsetX, bool showGestureHint,
-                          MediaControlCommand pressedControl, int8_t pressedSettingsRow,
-                          bool phoneDetail, uint8_t phoneDetailScroll,
-                          bool phoneSheetVisible, int16_t phoneSheetOffsetY,
-                          bool automaticMode, bool homeTransitionVisible,
-                          int16_t homeTransitionOffsetY, uint8_t settingsPage,
-                          int16_t homeScroll, int16_t musicLyricOffsetY,
-                          const WeatherState& weather) {
+void hashPhone(uint32_t& hash, const PhoneState& phone) {
+  hashValue(hash, phone.enabled);
+  hashValue(hash, phone.notification.active);
+  hashString(hash, phone.notification.kind);
+  hashString(hash, phone.notification.app);
+  hashString(hash, phone.notification.sender);
+  hashString(hash, phone.notification.title);
+  hashString(hash, phone.notification.body);
+  hashValue(hash, phone.weather.temperatureC);
+  hashString(hash, phone.weather.condition);
+  hashValue(hash, phone.weather.aqi);
+  hashString(hash, phone.weather.alert);
+  hashString(hash, phone.calendar.title);
+  hashString(hash, phone.calendar.location);
+  hashValue(hash, phone.device.batteryPercent);
+  hashValue(hash, phone.device.charging);
+  hashString(hash, phone.device.network);
+  hashValue(hash, phone.device.signalLevel);
+}
+
+uint32_t phoneSheetSignature(const PhoneState& phone, bool wifiConnected,
+                             bool bleConnected, bool detail, uint8_t detailScroll) {
   uint32_t hash = 2166136261UL;
-  const uint8_t view = static_cast<uint8_t>(viewMode);
-  hashValue(hash, view);
-  hashValue(hash, dragOffsetX);
-  hashValue(hash, showGestureHint);
-  const uint8_t pressed = static_cast<uint8_t>(pressedControl);
-  hashValue(hash, pressed);
-  hashValue(hash, pressedSettingsRow);
-  hashValue(hash, phoneDetail);
-  hashValue(hash, phoneDetailScroll);
-  hashValue(hash, phoneSheetVisible);
-  hashValue(hash, phoneSheetOffsetY);
-  hashValue(hash, automaticMode);
-  hashValue(hash, homeTransitionVisible);
-  hashValue(hash, homeTransitionOffsetY);
-  hashValue(hash, settingsPage);
-  hashValue(hash, homeScroll);
-  hashValue(hash, musicLyricOffsetY);
-  hashValue(hash, state.phone.enabled);
-  hashValue(hash, state.phone.notification.active);
-  hashString(hash, state.phone.notification.kind);
-  hashString(hash, state.phone.notification.app);
-  hashString(hash, state.phone.notification.sender);
-  hashString(hash, state.phone.notification.title);
-  hashString(hash, state.phone.notification.body);
-  hashValue(hash, state.phone.weather.temperatureC);
-  hashString(hash, state.phone.weather.condition);
-  hashValue(hash, state.phone.weather.aqi);
-  hashString(hash, state.phone.calendar.title);
-  hashString(hash, state.phone.calendar.location);
-  hashValue(hash, state.phone.device.batteryPercent);
-  hashValue(hash, state.phone.device.charging);
-  hashString(hash, state.phone.device.network);
-  hashWeather(hash, weather);
-  const bool connected = wifiConnected || bleConnected;
-  const uint8_t screenState = !connected ? 0
-                              : silenceMs > AMAP_STANDBY_MS ? 1
-                              : silenceMs > AMAP_STALE_MS ? 2
-                              : state.active ? 3
-                              : state.music.active ? 4 : 1;
-  hashValue(hash, screenState);
   hashValue(hash, wifiConnected);
   hashValue(hash, bleConnected);
-  hashString(hash, ip);
-  hashValue(hash, port);
-  if (screenState == 4) {
-    hashMusic(hash, state.music, true, now);
-    return hash;
-  }
-  if (screenState != 3) {
-    return hash;
-  }
+  hashValue(hash, detail);
+  hashValue(hash, detailScroll);
+  hashPhone(hash, phone);
+  return hash;
+}
 
+void hashNavigation(uint32_t& hash, const NavState& state) {
   hashString(hash, state.mode);
   hashString(hash, state.road);
   hashValue(hash, state.turn.icon);
@@ -196,6 +243,7 @@ uint32_t frameSignature(const NavState& state, bool wifiConnected, bool bleConne
   hashString(hash, state.eta.arriveTimeText);
   hashValue(hash, state.speed.current);
   hashValue(hash, state.speed.limit);
+  hashValue(hash, state.speed.overspeedLevel);
   hashValue(hash, state.lane.count);
   for (uint8_t i = 0; i < state.lane.count; ++i) {
     hashValue(hash, state.lane.lanes[i]);
@@ -229,10 +277,441 @@ uint32_t frameSignature(const NavState& state, bool wifiConnected, bool bleConne
   hashString(hash, state.guide.nextServiceAreaDistance);
   hashString(hash, state.alert);
   hashString(hash, state.detail);
-  if (state.music.active) {
-    hashMusic(hash, state.music, true, now);
+}
+
+uint32_t frameSignature(const NavState& state, bool wifiConnected, bool bleConnected,
+                         const String& ip, uint16_t port, unsigned long silenceMs,
+                          unsigned long now, TftViewMode viewMode,
+                          int16_t dragOffsetX, bool showGestureHint,
+                          MediaControlCommand pressedControl, int8_t pressedSettingsRow,
+                          bool phoneDetail, uint8_t phoneDetailScroll,
+                          bool phoneSheetVisible, int16_t phoneSheetOffsetY,
+                          bool automaticMode, bool homeTransitionVisible,
+                          int16_t homeTransitionOffsetY, uint8_t settingsPage,
+                          int16_t homeScroll,
+                          bool weatherRetryPressed,
+                          const WeatherState& weather, MusicPageStyle musicPageStyle,
+                          const DisplayPreferences& preferences) {
+  uint32_t hash = 2166136261UL;
+  const uint8_t view = static_cast<uint8_t>(viewMode);
+  hashValue(hash, view);
+  hashValue(hash, showGestureHint);
+  hashValue(hash, phoneSheetVisible);
+  hashValue(hash, homeTransitionVisible);
+
+  // Transition source/destination frames are snapshots. While either is
+  // moving, only its presentation offset can change the visible frame.
+  if (homeTransitionVisible) {
+    hashValue(hash, homeTransitionOffsetY);
+    return hash;
+  }
+  if (phoneSheetVisible) {
+    hashValue(hash, phoneSheetOffsetY);
+    hashValue(hash, phoneDetail);
+    hashValue(hash, phoneDetailScroll);
+    hashValue(hash, wifiConnected);
+    hashValue(hash, bleConnected);
+    hashPhone(hash, state.phone);
+    return hash;
+  }
+
+  if (dragOffsetX != 0) hashValue(hash, dragOffsetX);
+  const bool connected = wifiConnected || bleConnected;
+  switch (viewMode) {
+    case TftViewMode::Home:
+      hashValue(hash, homeScroll);
+      hashValue(hash, automaticMode);
+      hashValue(hash, connected);
+      hashValue(hash, state.active);
+      hashString(hash, state.turn.distanceText);
+      hashValue(hash, state.music.active);
+      hashString(hash, state.music.title);
+      // Home shows only the final compact weather summary, never forecasts,
+      // AQI, update timestamps, or background request errors.
+      hashValue(hash, weather.configured);
+      hashValue(hash, weather.loading);
+      hashValue(hash, weather.valid);
+      hashValue(hash, weather.temperatureC);
+      hashString(hash, weather.condition);
+      break;
+    case TftViewMode::Music: {
+      const uint8_t availability = !connected ? 0
+          : silenceMs > AMAP_STANDBY_MS ? 1
+          : state.music.active ? 2 : 1;
+      hashValue(hash, availability);
+      if (availability == 1) {
+        hashValue(hash, wifiConnected);
+        hashValue(hash, bleConnected);
+        hashString(hash, ip);
+        hashValue(hash, port);
+      } else if (availability == 2) {
+        const uint8_t pressed = static_cast<uint8_t>(pressedControl);
+        hashValue(hash, pressed);
+        hashValue(hash, musicPageStyle);
+        hashMusic(hash, state.music, true, now);
+        hashValue(hash, AlbumArtCache::instance().revision());
+      }
+      break;
+    }
+    case TftViewMode::Navigation: {
+      const uint8_t availability = !connected ? 0
+          : silenceMs > AMAP_STANDBY_MS ? 1
+          : state.active ? 2 : 1;
+      hashValue(hash, availability);
+      if (availability == 2) {
+        hashNavigation(hash, state);
+      } else {
+        hashValue(hash, wifiConnected);
+        hashValue(hash, bleConnected);
+        hashString(hash, ip);
+        hashValue(hash, port);
+      }
+      break;
+    }
+    case TftViewMode::Weather:
+      hashValue(hash, wifiConnected);
+      hashValue(hash, weatherRetryPressed);
+      hashWeather(hash, weather);
+      break;
+    case TftViewMode::AutoStatus:
+      hashValue(hash, wifiConnected);
+      hashValue(hash, bleConnected);
+      hashString(hash, ip);
+      hashValue(hash, port);
+      hashValue(hash, automaticMode);
+      hashValue(hash, pressedSettingsRow);
+      hashValue(hash, state.active);
+      hashValue(hash, state.music.active);
+      break;
+    case TftViewMode::Settings:
+      hashValue(hash, settingsPage);
+      hashValue(hash, pressedSettingsRow);
+      hashValue(hash, wifiConnected);
+      hashValue(hash, bleConnected);
+      if (settingsPage == 3) {
+        hashString(hash, ip);
+        hashValue(hash, port);
+      }
+      hashValue(hash, preferences.brightness);
+      hashValue(hash, preferences.nightDim);
+      hashValue(hash, preferences.autoView);
+      hashValue(hash, preferences.messageBanners);
+      hashValue(hash, preferences.musicPageStyle);
+      hashValue(hash, preferences.showFrameRate);
+      break;
+    default:
+      // Auto is normally resolved before signature construction. Keep this
+      // fallback page-scoped for preview and future callers.
+      hashValue(hash, connected);
+      hashValue(hash, state.active);
+      hashValue(hash, state.music.active);
+      break;
   }
   return hash;
+}
+
+void beginPageComponents(TftViewMode view, uint32_t components[8]) {
+  for (uint8_t i = 0; i < 8; ++i) {
+    components[i] = 2166136261UL;
+    const uint8_t page = static_cast<uint8_t>(view);
+    hashValue(components[i], page);
+    hashValue(components[i], i);
+  }
+}
+
+void buildPageComponents(const NavState& state, bool wifiConnected, bool bleConnected,
+                         const String& ip, uint16_t port, unsigned long silenceMs,
+                         unsigned long now, TftViewMode view, bool automaticMode,
+                         int16_t homeScroll, MediaControlCommand pressedControl,
+                         int8_t pressedSettingsRow, uint8_t settingsPage,
+                         bool weatherRetryPressed, const WeatherState& weather,
+                         const DisplayPreferences& preferences,
+                         uint32_t components[8]) {
+  beginPageComponents(view, components);
+  const bool connected = wifiConnected || bleConnected;
+  switch (view) {
+    case TftViewMode::Home:
+      hashValue(components[0], homeScroll);
+      hashValue(components[1], connected);
+      hashValue(components[2], state.active);
+      hashString(components[2], state.turn.distanceText);
+      hashValue(components[3], state.music.active);
+      hashString(components[3], state.music.title);
+      hashValue(components[4], weather.configured);
+      hashValue(components[4], weather.loading);
+      hashValue(components[4], weather.valid);
+      hashValue(components[4], weather.temperatureC);
+      hashString(components[4], weather.condition);
+      hashValue(components[5], automaticMode);
+      break;
+    case TftViewMode::Music: {
+      const uint8_t availability = !connected ? 0
+          : silenceMs > AMAP_STANDBY_MS ? 1
+          : state.music.active ? 2 : 1;
+      hashValue(components[0], availability);
+      hashValue(components[0], preferences.musicPageStyle);
+      if (availability != 2) {
+        hashValue(components[0], wifiConnected);
+        hashValue(components[0], bleConnected);
+        hashString(components[0], ip);
+        hashValue(components[0], port);
+        break;
+      }
+      hashValue(components[0], state.music.songId);
+      hashString(components[0], state.music.title);
+      hashString(components[0], state.music.artist);
+      hashString(components[0], state.music.album);
+      hashString(components[0], state.music.sourceName);
+      hashString(components[0], state.music.coverUrl);
+      hashValue(components[0], AlbumArtCache::instance().revision());
+      hashValue(components[0], state.music.durationMs);
+      const int64_t positionFrame = state.music.positionAt(now) / 40;
+      hashValue(components[1], positionFrame);
+      hashValue(components[1], state.music.durationMs);
+      hashString(components[2], state.music.previousLyric);
+      hashString(components[2], state.music.lyric);
+      hashString(components[2], state.music.translatedLyric);
+      hashString(components[2], state.music.nextLyric);
+      hashString(components[2], state.music.highlightedLyric);
+      hashString(components[2], state.music.currentWord);
+      hashValue(components[2], state.music.lineStartMs);
+      hashValue(components[2], state.music.lineDurationMs);
+      hashValue(components[2], state.music.wordStartMs);
+      hashValue(components[2], state.music.wordDurationMs);
+      hashValue(components[2], positionFrame);
+      const uint8_t pressed = static_cast<uint8_t>(pressedControl);
+      hashValue(components[3], state.music.playing);
+      hashValue(components[3], pressed);
+      break;
+    }
+    case TftViewMode::Navigation: {
+      const uint8_t availability = !connected ? 0
+          : silenceMs > AMAP_STANDBY_MS ? 1
+          : state.active ? 2 : 1;
+      hashValue(components[0], availability);
+      if (availability != 2) {
+        hashValue(components[0], wifiConnected);
+        hashValue(components[0], bleConnected);
+        hashString(components[0], ip);
+        hashValue(components[0], port);
+        break;
+      }
+      hashString(components[0], state.mode);
+      hashValue(components[0], state.lane.count);
+      hashValue(components[0], state.lightCount > 0);
+      hashValue(components[0], state.camera.distance >= 0);
+      hashValue(components[1], state.turn.icon);
+      hashString(components[1], state.turn.distanceText);
+      hashString(components[1], state.turn.road);
+      hashString(components[1], state.road);
+      hashValue(components[1], state.speed.current);
+      hashValue(components[2], state.lightCount);
+      for (uint8_t i = 0; i < state.lightCount; ++i) {
+        hashValue(components[2], state.lights[i].dir);
+        hashValue(components[2], state.lights[i].status);
+        hashValue(components[2], state.lights[i].seconds);
+      }
+      hashValue(components[2], state.camera.type);
+      hashValue(components[2], state.camera.distance);
+      hashValue(components[2], state.camera.speedLimit);
+      hashValue(components[2], state.speed.limit);
+      hashValue(components[2], state.speed.overspeedLevel);
+      hashValue(components[3], state.lane.count);
+      for (uint8_t i = 0; i < state.lane.count; ++i) {
+        hashValue(components[3], state.lane.lanes[i]);
+        hashValue(components[3], state.lane.advised[i]);
+      }
+      hashValue(components[4], state.tmc.totalDistance);
+      hashValue(components[4], state.tmc.finishDistance);
+      hashValue(components[4], state.tmc.count);
+      for (uint8_t i = 0; i < state.tmc.count; ++i) {
+        hashValue(components[4], state.tmc.status[i]);
+        hashValue(components[4], state.tmc.distance[i]);
+      }
+      hashString(components[5], state.eta.remainDistanceText);
+      hashString(components[5], state.eta.remainTimeText);
+      hashString(components[5], state.eta.arriveTimeText);
+      hashValue(components[5], state.route.remainingMeters);
+      hashValue(components[5], state.route.remainingSeconds);
+      hashValue(components[5], state.route.progressPercent);
+      hashString(components[5], state.route.destination);
+      hashString(components[5], state.guide.exitName);
+      hashString(components[5], state.guide.serviceAreaName);
+      hashString(components[5], state.guide.serviceAreaDistance);
+      hashString(components[5], state.road);
+      break;
+    }
+    case TftViewMode::Weather:
+      hashValue(components[0], weather.configured);
+      hashValue(components[0], weather.valid);
+      hashString(components[1], weather.city);
+      hashValue(components[1], weather.loading);
+      hashValue(components[2], wifiConnected);
+      hashWeather(components[2], weather);
+      hashValue(components[3], weatherRetryPressed);
+      break;
+    case TftViewMode::AutoStatus:
+      hashValue(components[1], wifiConnected);
+      hashValue(components[1], bleConnected);
+      hashString(components[1], ip);
+      hashValue(components[1], port);
+      hashValue(components[2], state.active);
+      hashValue(components[2], state.music.active);
+      hashValue(components[3], automaticMode);
+      hashValue(components[3], pressedSettingsRow);
+      break;
+    case TftViewMode::Settings:
+      hashValue(components[0], settingsPage);
+      hashValue(components[1], wifiConnected);
+      hashValue(components[1], bleConnected);
+      if (settingsPage == 3) {
+        hashString(components[1], ip);
+        hashValue(components[1], port);
+      }
+      hashValue(components[2], preferences.brightness);
+      hashValue(components[2], preferences.nightDim);
+      hashValue(components[2], preferences.autoView);
+      hashValue(components[2], preferences.messageBanners);
+      hashValue(components[2], preferences.musicPageStyle);
+      hashValue(components[2], preferences.showFrameRate);
+      hashValue(components[3], pressedSettingsRow);
+      break;
+    default:
+      hashValue(components[0], connected);
+      hashValue(components[0], state.active);
+      hashValue(components[0], state.music.active);
+      break;
+  }
+}
+
+void addSettingsRowRegion(TftRenderRegions& regions, uint8_t settingsPage, int8_t row) {
+  if (row < 0) return;
+  if (settingsPage == 0) {
+    regions.add(8, 54 + row * 38, 304, 41);
+  } else {
+    regions.add(8, 66 + row * 42, 304, 43);
+  }
+}
+
+void buildChangedRegions(TftViewMode view, const uint32_t current[8],
+                         const uint32_t previous[8], int16_t homeScroll,
+                         MusicPageStyle musicPageStyle, uint8_t settingsPage,
+                         int8_t pressedSettingsRow, int8_t previousPressedSettingsRow,
+                         TftRenderRegions& regions) {
+  if (current[0] != previous[0]) {
+    regions.add(0, 0, AMAP_TFT_WIDTH, AMAP_TFT_HEIGHT);
+    return;
+  }
+  switch (view) {
+    case TftViewMode::Home:
+      if (current[1] != previous[1]) regions.add(278, 16, 20, 22);
+      if (current[2] != previous[2]) regions.add(8, 51 - homeScroll, 150, 70);
+      if (current[3] != previous[3]) regions.add(162, 51 - homeScroll, 150, 70);
+      if (current[4] != previous[4]) regions.add(8, 124 - homeScroll, 150, 70);
+      if (current[5] != previous[5]) regions.add(162, 124 - homeScroll, 150, 70);
+      break;
+    case TftViewMode::Music:
+      if (musicPageStyle == MusicPageStyle::PipWindow) {
+        if (current[1] != previous[1]) regions.add(14, 101, 284, 21);
+        if (current[2] != previous[2]) regions.add(14, 132, 284, 94);
+        if (current[3] != previous[3]) regions.add(102, 20, 194, 70);
+      } else if (musicPageStyle == MusicPageStyle::RefinedNowPlaying) {
+        if (current[1] != previous[1]) regions.add(0, 184, 320, 56);
+        if (current[2] != previous[2]) regions.add(151, 22, 164, 160);
+        if (current[3] != previous[3]) regions.add(0, 184, 320, 56);
+      } else {
+        if (current[1] != previous[1]) regions.add(10, 184, 136, 55);
+        if (current[2] != previous[2]) regions.add(158, 39, 157, 121);
+        // The transport buttons share boundary tiles with the progress bar
+        // and both time labels.  Restore the complete control band for a
+        // press/release or play-state change so an edge tile can never carry
+        // pixels from an older rotated framebuffer.
+        if (current[3] != previous[3]) regions.add(0, 184, 160, 56);
+      }
+      break;
+    case TftViewMode::Navigation:
+      if (current[1] != previous[1]) regions.add(7, 5, 210, 90);
+      if (current[2] != previous[2]) regions.add(0, 3, 320, 116);
+      if (current[3] != previous[3]) regions.add(7, 54, 306, 130);
+      if (current[4] != previous[4]) regions.add(7, 96, 306, 75);
+      if (current[5] != previous[5]) regions.add(7, 116, 306, 120);
+      break;
+    case TftViewMode::Weather:
+      if (current[1] != previous[1]) regions.add(10, 8, 300, 48);
+      if (current[2] != previous[2]) regions.add(8, 58, 304, 180);
+      if (current[3] != previous[3]) regions.add(84, 132, 152, 38);
+      break;
+    case TftViewMode::AutoStatus:
+      if (current[1] != previous[1]) regions.add(8, 58, 304, 56);
+      if (current[2] != previous[2]) regions.add(8, 116, 304, 49);
+      if (current[3] != previous[3]) regions.add(8, 173, 304, 51);
+      break;
+    case TftViewMode::Settings:
+      if (current[1] != previous[1]) {
+        regions.add(8, settingsPage == 3 ? 61 : 210, 304,
+                    settingsPage == 3 ? 155 : 24);
+      }
+      if (current[2] != previous[2]) regions.add(8, 64, 304, 142);
+      if (current[3] != previous[3]) {
+        addSettingsRowRegion(regions, settingsPage, previousPressedSettingsRow);
+        addSettingsRowRegion(regions, settingsPage, pressedSettingsRow);
+      }
+      break;
+    default:
+      for (uint8_t i = 1; i < 8; ++i) {
+        if (current[i] != previous[i]) {
+          regions.add(0, 0, AMAP_TFT_WIDTH, AMAP_TFT_HEIGHT);
+          break;
+        }
+      }
+      break;
+  }
+
+  // Every visual component signature needs a matching compose region.  This
+  // guard turns future mapping omissions into a safe one-off full redraw
+  // instead of leaving stale pixels on an otherwise cached page.
+  if (regions.count == 0) {
+    for (uint8_t i = 1; i < 8; ++i) {
+      if (current[i] != previous[i]) {
+        regions.add(0, 0, AMAP_TFT_WIDTH, AMAP_TFT_HEIGHT);
+        break;
+      }
+    }
+  }
+}
+
+void calculateHomeTransitionBounds(int16_t offsetY, TftViewMode sourceView,
+                                   uint8_t settingsPage, int16_t homeScroll,
+                                   int16_t& left, int16_t& top,
+                                   int16_t& width, int16_t& height) {
+  const float progress = constrain(static_cast<float>(AMAP_TFT_HEIGHT - offsetY) /
+                                       AMAP_TFT_HEIGHT,
+                                   0.0f, 1.0f);
+  int16_t targetLeft = 22;
+  int16_t targetTop = 66 - homeScroll;
+  if (sourceView == TftViewMode::Music) {
+    targetLeft = 176;
+  } else if (sourceView == TftViewMode::Weather) {
+    targetTop = 139 - homeScroll;
+  } else if (sourceView == TftViewMode::Settings) {
+    targetLeft = settingsPage == 1 ? 176 : 22;
+    targetTop = 212 - homeScroll;
+  } else if (sourceView == TftViewMode::Auto || sourceView == TftViewMode::AutoStatus) {
+    targetLeft = 176;
+    targetTop = 139 - homeScroll;
+  }
+  width = max<int16_t>(38, static_cast<int16_t>(AMAP_TFT_WIDTH -
+      progress * (AMAP_TFT_WIDTH - 38)));
+  height = max<int16_t>(38, static_cast<int16_t>(AMAP_TFT_HEIGHT -
+      progress * (AMAP_TFT_HEIGHT - 38)));
+  left = static_cast<int16_t>(progress * targetLeft);
+  top = static_cast<int16_t>(progress * targetTop);
+}
+
+void addPhoneSheetVisibleBounds(TftRenderRegions& regions, int16_t offsetY) {
+  const int16_t top = max<int16_t>(0, offsetY);
+  const int16_t bottom = min<int16_t>(AMAP_TFT_HEIGHT, AMAP_TFT_HEIGHT + offsetY);
+  if (bottom > top) regions.add(0, top, AMAP_TFT_WIDTH, bottom - top);
 }
 }  // namespace
 
@@ -258,9 +737,20 @@ uint16_t* TftRenderer::Canvas::pixels() {
   return buffer;
 }
 
+void TftRenderer::Canvas::swapBuffer(Canvas& other) {
+  uint16_t* temporary = buffer;
+  buffer = other.buffer;
+  other.buffer = temporary;
+}
+
+void TftRenderer::Canvas::setRenderRegions(const TftRenderRegions* regions) {
+  renderRegions = regions;
+}
+
 void TftRenderer::Canvas::drawPixel(int16_t x, int16_t y, uint16_t color) {
-  if (buffer != nullptr && x >= 0 && y >= 0 && x < WIDTH && y < HEIGHT) {
-    buffer[y * WIDTH + x] = color;
+  if (buffer != nullptr && x >= 0 && y >= 0 && x < WIDTH && y < HEIGHT &&
+      (renderRegions == nullptr || renderRegions->contains(x, y))) {
+    buffer[y * WIDTH + x] = __builtin_bswap16(color);
   }
 }
 
@@ -268,23 +758,63 @@ void TftRenderer::Canvas::drawFastHLine(int16_t x, int16_t y, int16_t width, uin
   if (buffer == nullptr || y < 0 || y >= HEIGHT || width <= 0) return;
   if (x < 0) { width += x; x = 0; }
   if (x + width > WIDTH) width = WIDTH - x;
-  for (int16_t i = 0; i < width; ++i) buffer[y * WIDTH + x + i] = color;
+  const uint16_t panelColor = __builtin_bswap16(color);
+  if (renderRegions == nullptr) {
+    for (int16_t i = 0; i < width; ++i) buffer[y * WIDTH + x + i] = panelColor;
+    return;
+  }
+  for (uint8_t regionIndex = 0; regionIndex < renderRegions->count; ++regionIndex) {
+    const TftRenderRect& region = renderRegions->rects[regionIndex];
+    if (y < region.y || y >= region.y + region.height) continue;
+    const int16_t left = max<int16_t>(x, region.x);
+    const int16_t right = min<int16_t>(x + width, region.x + region.width);
+    for (int16_t column = left; column < right; ++column) {
+      buffer[y * WIDTH + column] = panelColor;
+    }
+  }
 }
 
 void TftRenderer::Canvas::drawFastVLine(int16_t x, int16_t y, int16_t height, uint16_t color) {
   if (buffer == nullptr || x < 0 || x >= WIDTH || height <= 0) return;
   if (y < 0) { height += y; y = 0; }
   if (y + height > HEIGHT) height = HEIGHT - y;
-  for (int16_t i = 0; i < height; ++i) buffer[(y + i) * WIDTH + x] = color;
+  const uint16_t panelColor = __builtin_bswap16(color);
+  if (renderRegions == nullptr) {
+    for (int16_t i = 0; i < height; ++i) buffer[(y + i) * WIDTH + x] = panelColor;
+    return;
+  }
+  for (uint8_t regionIndex = 0; regionIndex < renderRegions->count; ++regionIndex) {
+    const TftRenderRect& region = renderRegions->rects[regionIndex];
+    if (x < region.x || x >= region.x + region.width) continue;
+    const int16_t top = max<int16_t>(y, region.y);
+    const int16_t bottom = min<int16_t>(y + height, region.y + region.height);
+    for (int16_t row = top; row < bottom; ++row) buffer[row * WIDTH + x] = panelColor;
+  }
 }
 
 void TftRenderer::Canvas::fillScreen(uint16_t color) {
   if (buffer == nullptr) return;
-  for (size_t i = 0; i < kPixels; ++i) buffer[i] = color;
+  const uint16_t panelColor = __builtin_bswap16(color);
+  if (renderRegions == nullptr) {
+    for (size_t i = 0; i < kPixels; ++i) buffer[i] = panelColor;
+    return;
+  }
+  for (uint8_t regionIndex = 0; regionIndex < renderRegions->count; ++regionIndex) {
+    const TftRenderRect& region = renderRegions->rects[regionIndex];
+    for (int16_t row = region.y; row < region.y + region.height; ++row) {
+      uint16_t* destination = buffer + row * WIDTH + region.x;
+      for (int16_t column = 0; column < region.width; ++column) {
+        destination[column] = panelColor;
+      }
+    }
+  }
 }
 
 TftRenderer::~TftRenderer() {
+  if (frameTransferTask != nullptr) vTaskDelete(frameTransferTask);
+  if (frameTransferDone != nullptr) vSemaphoreDelete(frameTransferDone);
   free(transferBuffer);
+  if (dmaTransferDone != nullptr) vSemaphoreDelete(dmaTransferDone);
 }
 
 void TftRenderer::begin() {
@@ -298,20 +828,22 @@ void TftRenderer::begin() {
   ledcAttachPin(AMAP_TFT_BL_PIN, 0);
   displayPreferences = DisplayPreferences::load();
   applyBrightness();
-  SPI.begin(AMAP_TFT_SCLK_PIN, AMAP_TFT_MISO_PIN, AMAP_TFT_MOSI_PIN, AMAP_TFT_CS_PIN);
   const HardwareSettings hardware = HardwareSettings::load();
   if (hardware.tftDriver == AMAP_TFT_DRIVER_ILI9341) {
+    SPI.begin(AMAP_TFT_SCLK_PIN, AMAP_TFT_MISO_PIN, AMAP_TFT_MOSI_PIN, AMAP_TFT_CS_PIN);
     ili9341.begin(AMAP_TFT_SPI_FREQUENCY);
     ili9341.setRotation(AMAP_TFT_ROTATION);
     ili9341.setSPISpeed(AMAP_TFT_SPI_FREQUENCY);
     ili9341.invertDisplay(hardware.invertColors);
     activePanel = &ili9341;
   } else {
-    st7789.init(AMAP_TFT_NATIVE_WIDTH, AMAP_TFT_NATIVE_HEIGHT, SPI_MODE0);
-    st7789.setRotation(AMAP_TFT_ROTATION);
-    st7789.setSPISpeed(AMAP_TFT_SPI_FREQUENCY);
-    st7789.invertDisplay(hardware.invertColors);
-    activePanel = &st7789;
+    // ESP32 Arduino's generic SPI.writePixels() refills a 64-byte FIFO in a
+    // tight CPU loop. The native LCD driver feeds the same 80 MHz bus with
+    // GDMA, cutting full-frame transfer time without changing panel pixels.
+    if (!beginSt7789DmaPanel(hardware.invertColors)) {
+      Serial.println("TFT disabled: unable to initialise ST7789 DMA panel");
+      return;
+    }
   }
   transferBuffer = static_cast<uint16_t*>(heap_caps_malloc(
       kTransferBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
@@ -319,12 +851,24 @@ void TftRenderer::begin() {
     transferBuffer = static_cast<uint16_t*>(malloc(kTransferBytes));
   }
   if (!canvas.begin() || !previousFrame.begin() || !adjacentFrame.begin() ||
-      !homeTransitionFrame.begin() ||
+      !homeTransitionFrame.begin() || !transferFrame.begin() || !pageCache.begin() ||
       transferBuffer == nullptr) {
     Serial.println("TFT disabled: unable to allocate frame buffers");
     return;
   }
-  activePanel->fillScreen(0x0861);
+  frameTransferDone = xSemaphoreCreateBinary();
+  if (frameTransferDone == nullptr) {
+    Serial.println("TFT disabled: unable to allocate transfer synchronizer");
+    return;
+  }
+  xSemaphoreGive(frameTransferDone);
+  if (xTaskCreate(frameTransferTaskEntry, "tft-transfer", 4096, this, 2,
+                  &frameTransferTask) != pdPASS) {
+    frameTransferTask = nullptr;
+    Serial.println("TFT disabled: unable to start transfer task");
+    return;
+  }
+  if (activePanel != nullptr) activePanel->fillScreen(0x0861);
   tftFont.begin(canvas);
   tftFont.setFontMode(1);
   tftFont.setFont(u8g2_font_wqy12_t_gb2312);
@@ -336,9 +880,10 @@ void TftRenderer::begin() {
   const size_t psramTotal = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
   const size_t psramFree = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   const size_t psramLargest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
-  Serial.printf("%s ready: %dx%d, inversion=%s, 4-frame buffered, PSRAM=%u/%u free, largest=%u, SPI SCK=%d MOSI=%d CS=%d\n",
-                hardware.tftDriverName(), activePanel->width(), activePanel->height(),
+  Serial.printf("%s ready: %dx%d, inversion=%s, transfer=%s, 5-frame pipelined, PSRAM=%u/%u free, largest=%u, SPI SCK=%d MOSI=%d CS=%d\n",
+                hardware.tftDriverName(), AMAP_TFT_WIDTH, AMAP_TFT_HEIGHT,
                 hardware.invertColors ? "on" : "off",
+                dmaPanel != nullptr ? "GDMA" : "FIFO",
                 static_cast<unsigned>(psramFree), static_cast<unsigned>(psramTotal),
                 static_cast<unsigned>(psramLargest),
                 AMAP_TFT_SCLK_PIN, AMAP_TFT_MOSI_PIN, AMAP_TFT_CS_PIN);
@@ -379,6 +924,12 @@ bool TftRenderer::takeMediaControlCommand(MediaControlCommand& command) {
   return true;
 }
 
+bool TftRenderer::takeWeatherRetryRequest() {
+  if (!pendingWeatherRetry) return false;
+  pendingWeatherRetry = false;
+  return true;
+}
+
 const char* TftRenderer::currentViewName() const {
   switch (viewMode) {
     case TftViewMode::Home: return "home";
@@ -392,6 +943,15 @@ const char* TftRenderer::currentViewName() const {
 }
 
 void TftRenderer::beginTouch(int16_t x, int16_t y, unsigned long now) {
+  // A rendered transition may already be at its last pixel while its spring
+  // still has a tiny invisible velocity. Settle it before hit-testing so the
+  // page under the finger always owns the touch.
+  if (homeTransitionVisible) {
+    const bool commitHome = homeTransitionTargetY == 0;
+    Serial.printf("touch settled home transition: target=%s offset=%d\n",
+                  commitHome ? "home" : "app", homeTransitionOffsetY);
+    finishHomeTransition(commitHome, now);
+  }
   touching = true;
   directionLocked = false;
   horizontalGesture = false;
@@ -400,13 +960,13 @@ void TftRenderer::beginTouch(int16_t x, int16_t y, unsigned long now) {
   phoneSheetAnimationLocked = phoneSheetSpringActive;
   homeGesture = false;
   homeScrollGesture = false;
-  musicLyricGesture = false;
+  weatherRetryPressed = viewMode == TftViewMode::Weather && weatherRetryAvailable &&
+                        hitTestWeatherRetry(x, y);
   springActive = false;
   touchStartX = x;
   touchStartY = y;
   touchBaseOffset = dragOffsetX;
   homeScrollStart = homeScroll;
-  musicLyricOffsetStart = musicLyricOffsetY;
   lastSampleX = x;
   lastSampleY = y;
   releaseVelocityX = 0.0f;
@@ -422,11 +982,14 @@ void TftRenderer::beginTouch(int16_t x, int16_t y, unsigned long now) {
   if (viewMode == TftViewMode::Settings) {
     if (settingsPage > 0 && x >= 12 && x <= 66 && y >= 10 && y <= 35) {
       settingsRow = -2;
-    } else if (settingsPage == 0 && x >= 8 && x <= 312 && y >= 58 && y <= 201) {
-      settingsRow = static_cast<int8_t>((y - 58) / 51);
-    } else if ((settingsPage == 1 || settingsPage == 2) &&
-               x >= 8 && x <= 312 && y >= 70 && y <= 147) {
+    } else if (settingsPage == 0 && x >= 8 && x <= 312 && y >= 58 && y <= 211) {
+      settingsRow = static_cast<int8_t>((y - 58) / 38);
+    } else if (settingsPage == 1 && x >= 8 && x <= 312 && y >= 70 && y <= 189) {
       settingsRow = static_cast<int8_t>((y - 70) / 42);
+    } else if (settingsPage == 2 && x >= 8 && x <= 312 && y >= 70 && y <= 147) {
+      settingsRow = static_cast<int8_t>((y - 70) / 42);
+    } else if (settingsPage == 4 && x >= 8 && x <= 312 && y >= 70 && y <= 105) {
+      settingsRow = 0;
     }
   }
 }
@@ -445,10 +1008,7 @@ void TftRenderer::moveTouch(int16_t x, int16_t y, unsigned long now) {
                                                abs(deltaY) >= abs(deltaX)));
     homeGesture = !phoneSheetGesture && !phoneSheetVisible && viewMode != TftViewMode::Home &&
                   touchStartY >= AMAP_TFT_HEIGHT - 42 && deltaY < 0;
-    musicLyricGesture = !phoneSheetGesture && !homeGesture && viewMode == TftViewMode::Music &&
-                        touchStartX >= 150 && touchStartY >= 34 && touchStartY <= 180 &&
-                        abs(deltaY) >= abs(deltaX);
-    homeScrollGesture = !phoneSheetGesture && !homeGesture && !musicLyricGesture &&
+    homeScrollGesture = !phoneSheetGesture && !homeGesture &&
                         viewMode == TftViewMode::Home &&
                         abs(deltaY) >= abs(deltaX);
     // The notification sheet settles once released; a later touch may not
@@ -457,10 +1017,23 @@ void TftRenderer::moveTouch(int16_t x, int16_t y, unsigned long now) {
     if (homeGesture && !homeTransitionSnapshotReady) {
       memcpy(homeTransitionFrame.pixels(), previousFrame.pixels(), kPixelBytes);
       homeTransitionSnapshotReady = true;
+      homeTransitionDestinationReady = false;
+    }
+    if (phoneSheetGesture) {
+      phoneSheetSnapshotReady = false;
+      if (!phoneSheetVisible) {
+        memcpy(homeTransitionFrame.pixels(), previousFrame.pixels(), kPixelBytes);
+        phoneSheetBaseSnapshotReady = true;
+      } else {
+        phoneSheetBaseSnapshotReady = false;
+      }
     }
   }
   if (directionLocked) {
     pressedMediaControl = MediaControlCommand::None;
+    weatherRetryPressed = false;
+    settingsRow = -1;
+    autoStatusPressed = false;
   }
   const unsigned long elapsed = now - lastSampleAt;
   if (elapsed > 0 && x != lastSampleX) {
@@ -489,10 +1062,6 @@ void TftRenderer::moveTouch(int16_t x, int16_t y, unsigned long now) {
     homeTransitionOffsetY = max<int16_t>(0, rawOffset);
     homeTransitionVisible = true;
     gestureHintUntil = now + 350UL;
-  } else if (directionLocked && musicLyricGesture) {
-    musicLyricOffsetY = constrain(musicLyricOffsetStart + deltaY, -36, 36);
-    musicLyricReturnAt = 0;
-    frameDrawn = false;
   } else if (directionLocked && homeScrollGesture) {
     homeScroll = constrain(homeScrollStart - deltaY, 0, 33);
     frameDrawn = false;
@@ -512,16 +1081,27 @@ void TftRenderer::endTouch(unsigned long now) {
     pendingMediaControl = pressedMediaControl;
     Serial.printf("touch media control: %s\n", mediaControlAction(pendingMediaControl));
     pressedMediaControl = MediaControlCommand::None;
+    frameDrawn = false;
     gestureHintUntil = 0;
     return;
   }
-  if (!directionLocked && settingsRow >= 0 && duration < 700UL && viewMode == TftViewMode::Settings) {
+  if (!directionLocked && weatherRetryPressed && duration < 700UL &&
+      hitTestWeatherRetry(lastSampleX, lastSampleY)) {
+    pendingWeatherRetry = true;
+    weatherRetryPressed = false;
+    frameDrawn = false;
+    gestureHintUntil = 0;
+    return;
+  }
+  weatherRetryPressed = false;
+  if (!directionLocked && settingsRow >= 0 && duration < 700UL &&
+      viewMode == TftViewMode::Settings && !homeTransitionVisible) {
     cycleSettingsRow();
     settingsRow = -1;
     return;
   }
   if (!directionLocked && settingsRow == -2 && duration < 700UL &&
-      viewMode == TftViewMode::Settings) {
+      viewMode == TftViewMode::Settings && !homeTransitionVisible) {
     settingsPage = 0;
     settingsRow = -1;
     frameDrawn = false;
@@ -536,8 +1116,19 @@ void TftRenderer::endTouch(unsigned long now) {
     frameDrawn = false;
     return;
   }
+  // The detail view promises "tap to return".  Previously only a tiny area at
+  // the very bottom could dismiss it, while every vertical drag was consumed
+  // as text scrolling.  Let a normal tap anywhere in the detail return to the
+  // phone overview, so the user always has an immediate way out.
+  if (!directionLocked && duration < 700UL && phoneSheetVisible && phoneDetail) {
+    phoneDetail = false;
+    phoneDetailScroll = 0;
+    frameDrawn = false;
+    gestureHintUntil = 0;
+    return;
+  }
   if (!directionLocked && duration < 700UL && phoneSheetVisible && lastSampleY >= 195) {
-    phoneDetail = !phoneDetail;
+    phoneDetail = true;
     phoneDetailScroll = 0;
     frameDrawn = false;
     return;
@@ -567,10 +1158,6 @@ void TftRenderer::endTouch(unsigned long now) {
     homeTransitionVelocity = releaseVelocityY;
     homeTransitionSpringActive = true;
     lastSpringAt = now;
-  } else if (directionLocked && musicLyricGesture) {
-    musicLyricReturnAt = now + 2000UL;
-    lastMusicLyricFrameAt = now;
-    frameDrawn = false;
   } else if (directionLocked && homeScrollGesture) {
     frameDrawn = false;
   } else if (directionLocked && !phoneSheetAnimationLocked && !horizontalGesture &&
@@ -599,17 +1186,33 @@ void TftRenderer::applyBrightness() {
   ledcWrite(0, duty);
 }
 
+void TftRenderer::recordRenderedFrame(unsigned long now) {
+  if (!displayPreferences.showFrameRate) return;
+  if (fpsWindowStartedAt == 0) fpsWindowStartedAt = now;
+  ++fpsFrameCount;
+  const unsigned long elapsed = now - fpsWindowStartedAt;
+  if (elapsed < 1000UL) return;
+  framesPerSecond = static_cast<uint16_t>(fpsFrameCount * 1000UL / max<unsigned long>(1, elapsed));
+  fpsWindowStartedAt = now;
+  fpsFrameCount = 0;
+}
+
 void TftRenderer::cycleSettingsRow() {
   if (settingsPage == 0) {
-    settingsPage = constrain(static_cast<int>(settingsRow) + 1, 1, 3);
+    settingsPage = constrain(static_cast<int>(settingsRow) + 1, 1, 4);
     frameDrawn = false;
     return;
   }
-  const int row = constrain(static_cast<int>(settingsRow), 0, 1);
+  const int row = constrain(static_cast<int>(settingsRow), 0, settingsPage == 1 ? 2 : 1);
   if (settingsPage == 1) {
     if (row == 0) displayPreferences.brightness = displayPreferences.brightness >= 100
         ? 20 : displayPreferences.brightness + 20;
-    else displayPreferences.nightDim = !displayPreferences.nightDim;
+    else if (row == 1) displayPreferences.nightDim = !displayPreferences.nightDim;
+    else {
+      const uint8_t next =
+          (static_cast<uint8_t>(displayPreferences.musicPageStyle) + 1U) % 3U;
+      displayPreferences.musicPageStyle = static_cast<MusicPageStyle>(next);
+    }
   } else if (settingsPage == 2) {
     if (row == 0) {
       displayPreferences.autoView = !displayPreferences.autoView;
@@ -617,6 +1220,11 @@ void TftRenderer::cycleSettingsRow() {
     } else {
       displayPreferences.messageBanners = !displayPreferences.messageBanners;
     }
+  } else if (settingsPage == 4) {
+    displayPreferences.showFrameRate = !displayPreferences.showFrameRate;
+    fpsWindowStartedAt = millis();
+    fpsFrameCount = 0;
+    framesPerSecond = 0;
   }
   displayPreferences.save();
   applyBrightness();
@@ -682,6 +1290,8 @@ void TftRenderer::advancePhoneSheetSpring(unsigned long now) {
     phoneSheetSpringActive = false;
     phoneSheetVelocity = 0.0f;
     phoneSheetVisible = phoneSheetOffsetY > -AMAP_TFT_HEIGHT;
+    phoneSheetBaseSnapshotReady = false;
+    phoneSheetSnapshotReady = false;
     gestureHintUntil = now + 700UL;
   }
 }
@@ -699,20 +1309,36 @@ void TftRenderer::advanceHomeTransitionSpring(unsigned long now) {
   const float displacement = position - homeTransitionTargetY;
   const float c = homeTransitionVelocity + omega * displacement;
   const float decay = expf(-omega * dt);
-  const float next = homeTransitionTargetY + (displacement + c * dt) * decay;
+  float next = homeTransitionTargetY + (displacement + c * dt) * decay;
   homeTransitionVelocity = (homeTransitionVelocity - omega * c * dt) * decay;
-  homeTransitionOffsetY = static_cast<int16_t>(roundf(next));
-  if (abs(homeTransitionTargetY - homeTransitionOffsetY) <= 1 &&
-      abs(homeTransitionVelocity) < 12.0f) {
-    const bool commit = homeTransitionTargetY == 0;
-    homeTransitionOffsetY = AMAP_TFT_HEIGHT;
-    homeTransitionSpringActive = false;
-    homeTransitionVisible = false;
-    homeTransitionSnapshotReady = false;
+  if ((homeTransitionTargetY == 0 && next <= 0.0f) ||
+      (homeTransitionTargetY == AMAP_TFT_HEIGHT && next >= AMAP_TFT_HEIGHT)) {
+    next = homeTransitionTargetY;
     homeTransitionVelocity = 0.0f;
-    if (commit) viewMode = TftViewMode::Home;
-    gestureHintUntil = now + 700UL;
   }
+  homeTransitionOffsetY = static_cast<int16_t>(roundf(next));
+  // Integer-pixel rendering cannot show the remaining sub-pixel spring tail.
+  // Commit as soon as the visible endpoint is reached so input state cannot
+  // lag behind the screen by another frame.
+  if (abs(homeTransitionTargetY - homeTransitionOffsetY) <= 1) {
+    finishHomeTransition(homeTransitionTargetY == 0, now);
+  }
+}
+
+void TftRenderer::finishHomeTransition(bool commitHome, unsigned long now) {
+  homeTransitionOffsetY = AMAP_TFT_HEIGHT;
+  homeTransitionSpringActive = false;
+  homeTransitionVisible = false;
+  homeTransitionSnapshotReady = false;
+  homeTransitionDestinationReady = false;
+  homeTransitionVelocity = 0.0f;
+  settingsRow = -1;
+  autoStatusPressed = false;
+  weatherRetryPressed = false;
+  pressedMediaControl = MediaControlCommand::None;
+  if (commitHome) viewMode = TftViewMode::Home;
+  gestureHintUntil = now + 700UL;
+  frameDrawn = false;
 }
 
 void TftRenderer::switchView(TftViewMode mode, unsigned long now) {
@@ -722,6 +1348,7 @@ void TftRenderer::switchView(TftViewMode mode, unsigned long now) {
   homeTransitionSpringActive = false;
   homeTransitionVisible = false;
   homeTransitionSnapshotReady = false;
+  homeTransitionDestinationReady = false;
   homeTransitionOffsetY = AMAP_TFT_HEIGHT;
   springVelocity = 0.0f;
   springTarget = 0;
@@ -771,10 +1398,20 @@ MediaControlCommand TftRenderer::hitTestMediaControl(int16_t x, int16_t y) const
   if (!musicControlsVisible || y < 195 || y > 232) {
     return MediaControlCommand::None;
   }
+  if (displayPreferences.musicPageStyle == MusicPageStyle::RefinedNowPlaying) {
+    if (x >= 98 && x <= 139) return MediaControlCommand::Previous;
+    if (x >= 140 && x <= 181) return MediaControlCommand::PlayPause;
+    if (x >= 182 && x <= 223) return MediaControlCommand::Next;
+    return MediaControlCommand::None;
+  }
   if (x >= 15 && x <= 56) return MediaControlCommand::Previous;
   if (x >= 57 && x <= 98) return MediaControlCommand::PlayPause;
   if (x >= 99 && x <= 141) return MediaControlCommand::Next;
   return MediaControlCommand::None;
+}
+
+bool TftRenderer::hitTestWeatherRetry(int16_t x, int16_t y) const {
+  return x >= 88 && x <= 232 && y >= 136 && y <= 166;
 }
 
 void TftRenderer::compositeHorizontalSlide(int16_t offset) {
@@ -853,12 +1490,22 @@ void TftRenderer::compositeHomeTransition(int16_t offsetY) {
       progress * (AMAP_TFT_HEIGHT - 38)));
   const int16_t left = static_cast<int16_t>(progress * targetLeft);
   const int16_t top = static_cast<int16_t>(progress * targetTop);
+  // Build the exact nearest-neighbour map once per axis. The old inner loop
+  // performed two integer divisions for every destination pixel (up to
+  // 76,800 divisions per frame), which was visible as uneven return motion.
+  int16_t sourceXs[AMAP_TFT_WIDTH];
+  int16_t sourceYs[AMAP_TFT_HEIGHT];
+  for (int16_t x = 0; x < width; ++x) {
+    sourceXs[x] = static_cast<int32_t>(x) * AMAP_TFT_WIDTH / width;
+  }
+  for (int16_t y = 0; y < height; ++y) {
+    sourceYs[y] = static_cast<int32_t>(y) * AMAP_TFT_HEIGHT / height;
+  }
   for (int16_t y = 0; y < height && top + y < AMAP_TFT_HEIGHT; ++y) {
-    const int16_t sourceY = y * AMAP_TFT_HEIGHT / height;
+    uint16_t* destination = base + (top + y) * AMAP_TFT_WIDTH + left;
+    const uint16_t* source = app + sourceYs[y] * AMAP_TFT_WIDTH;
     for (int16_t x = 0; x < width && left + x < AMAP_TFT_WIDTH; ++x) {
-      const int16_t sourceX = x * AMAP_TFT_WIDTH / width;
-      base[(top + y) * AMAP_TFT_WIDTH + left + x] =
-          app[sourceY * AMAP_TFT_WIDTH + sourceX];
+      destination[x] = source[sourceXs[x]];
     }
   }
   // The source app first shrinks toward its launcher tile, then the tile's
@@ -872,6 +1519,34 @@ void TftRenderer::compositeHomeTransition(int16_t offsetY) {
   }
 }
 
+void TftRenderer::frameTransferTaskEntry(void* context) {
+  TftRenderer* renderer = static_cast<TftRenderer*>(context);
+  for (;;) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    const uint32_t startedAt = micros();
+    renderer->pushRectangle(0, 0, AMAP_TFT_WIDTH, AMAP_TFT_HEIGHT,
+                            renderer->previousFrame.pixels(), AMAP_TFT_WIDTH);
+    renderer->lastTransferDurationUs = micros() - startedAt;
+    xSemaphoreGive(renderer->frameTransferDone);
+  }
+}
+
+void TftRenderer::waitForFrameTransfer() {
+  if (frameTransferDone == nullptr) return;
+  xSemaphoreTake(frameTransferDone, portMAX_DELAY);
+  xSemaphoreGive(frameTransferDone);
+}
+
+void TftRenderer::queueFullFrameTransfer() {
+  xSemaphoreTake(frameTransferDone, portMAX_DELAY);
+  // Rotate ownership instead of copying the 153 KB frame twice. The transfer
+  // task owns previousFrame until it signals completion; canvas immediately
+  // receives a free buffer for composing the next frame.
+  canvas.swapBuffer(transferFrame);
+  transferFrame.swapBuffer(previousFrame);
+  xTaskNotifyGive(frameTransferTask);
+}
+
 void TftRenderer::render(const NavState& state, bool wifiConnected, bool bleConnected,
                          const String& ip, uint16_t port, unsigned long silenceMs,
                          const WeatherState& weather) {
@@ -883,68 +1558,245 @@ void TftRenderer::render(const NavState& state, bool wifiConnected, bool bleConn
   advanceSpring(now);
   advancePhoneSheetSpring(now);
   advanceHomeTransitionSpring(now);
-  if (!touching && musicLyricReturnAt != 0 && now >= musicLyricReturnAt &&
-      musicLyricOffsetY != 0) {
-    const unsigned long elapsed = min<unsigned long>(now - lastMusicLyricFrameAt, 34UL);
-    lastMusicLyricFrameAt = now;
-    const int16_t step = max<int16_t>(1, static_cast<int16_t>(elapsed / 7UL));
-    if (abs(musicLyricOffsetY) <= step) musicLyricOffsetY = 0;
-    else musicLyricOffsetY += musicLyricOffsetY > 0 ? -step : step;
-    frameDrawn = false;
-  }
   const TftViewMode renderedView = viewMode == TftViewMode::Auto && displayPreferences.autoView
       ? resolveAutoView(state, connected, silenceMs)
       : (viewMode == TftViewMode::Auto ? TftViewMode::Home : viewMode);
   const bool automaticMode = displayPreferences.autoView;
+  weatherRetryAvailable = renderedView == TftViewMode::Weather && weather.configured &&
+                          !weather.valid && !weather.loading && !weather.error.isEmpty();
+  if (!weatherRetryAvailable) weatherRetryPressed = false;
   const int8_t renderedPressedRow = viewMode == TftViewMode::AutoStatus && autoStatusPressed
       ? 0 : settingsRow;
-  musicControlsVisible = state.music.active && connected &&
+  musicControlsVisible = displayPreferences.musicPageStyle != MusicPageStyle::PipWindow &&
+      state.music.active && connected &&
       ((renderedView == TftViewMode::Music && silenceMs <= AMAP_STANDBY_MS) ||
        (renderedView == TftViewMode::Auto && silenceMs <= AMAP_STALE_MS && !state.active));
   const bool showGestureHint = pressedMediaControl == MediaControlCommand::None &&
                                (touching || springActive || phoneSheetSpringActive ||
                                 homeTransitionSpringActive ||
                                 static_cast<long>(gestureHintUntil - now) > 0);
-  const uint32_t signature =
+  uint32_t signature =
       frameSignature(state, wifiConnected, bleConnected, ip, port, silenceMs, now,
                        renderedView, dragOffsetX, showGestureHint, pressedMediaControl, renderedPressedRow,
-                      phoneDetail, phoneDetailScroll, phoneSheetVisible, phoneSheetOffsetY,
+                       phoneDetail, phoneDetailScroll, phoneSheetVisible, phoneSheetOffsetY,
                        automaticMode, homeTransitionVisible, homeTransitionOffsetY, settingsPage,
-                       homeScroll, musicLyricOffsetY, weather);
+                       homeScroll, weatherRetryPressed, weather,
+                       displayPreferences.musicPageStyle, displayPreferences);
+  if (displayPreferences.showFrameRate) {
+    // The diagnostic badge itself changes at most once per second. Dynamic
+    // pages still render at their natural cadence and record every frame, but
+    // a static page no longer burns CPU merely to redraw an unchanged FPS label.
+    const unsigned long fpsSecond = now / 1000UL;
+    hashValue(signature, fpsSecond);
+  }
   if (frameDrawn && signature == lastFrameSignature) {
     return;
   }
 
   const uint32_t frameStartedAt = micros();
-  TftFrameRenderer::render(canvas, tftFont, state, wifiConnected, bleConnected, ip, port,
-                             silenceMs, weather, renderedView, pressedMediaControl, renderedPressedRow, phoneDetail,
-                             phoneDetailScroll, automaticMode, settingsPage, homeScroll,
-                             musicLyricOffsetY);
+  TftRenderRegions composeRegions;
+  TftRenderRegions overlayRegions;
+  bool usedPageCache = false;
+  bool useExplicitDirtyScan = false;
   if (homeTransitionVisible) {
-    TftFrameRenderer::render(adjacentFrame, adjacentFont, state, wifiConnected, bleConnected,
-                              ip, port, silenceMs, weather, TftViewMode::Home,
-                             MediaControlCommand::None, -1, false, 0, false, 0, homeScroll);
+    // The source app and destination desktop are static for the short return
+    // animation. Render the desktop once instead of rebuilding both complete
+    // pages before every composite frame.
+    if (!homeTransitionDestinationReady) {
+      TftFrameRenderer::render(adjacentFrame, adjacentFont, state, wifiConnected, bleConnected,
+                                ip, port, silenceMs, weather, TftViewMode::Home,
+                               MediaControlCommand::None, -1, false, 0, false, 0, homeScroll,
+                               false, MusicPageStyle::Standard, &displayPreferences);
+      homeTransitionDestinationReady = true;
+    }
+    int16_t currentLeft = 0;
+    int16_t currentTop = 0;
+    int16_t currentWidth = 0;
+    int16_t currentHeight = 0;
+    calculateHomeTransitionBounds(homeTransitionOffsetY, viewMode, settingsPage,
+                                  homeScroll, currentLeft, currentTop,
+                                  currentWidth, currentHeight);
+    if (lastHomeTransitionBoundsValid) {
+      composeRegions.add(lastHomeTransitionLeft, lastHomeTransitionTop,
+                         lastHomeTransitionWidth, lastHomeTransitionHeight);
+      composeRegions.add(currentLeft, currentTop, currentWidth, currentHeight);
+      useExplicitDirtyScan = true;
+    }
+    lastHomeTransitionLeft = currentLeft;
+    lastHomeTransitionTop = currentTop;
+    lastHomeTransitionWidth = currentWidth;
+    lastHomeTransitionHeight = currentHeight;
+    lastHomeTransitionBoundsValid = true;
     compositeHomeTransition(homeTransitionOffsetY);
   } else if (phoneSheetVisible) {
-    TftFrameRenderer::renderPhoneSheet(adjacentFrame, adjacentFont, state.phone,
-                                       wifiConnected, bleConnected, phoneDetail,
-                                       phoneDetailScroll);
-    compositePhoneSheet(phoneSheetOffsetY);
+    const uint32_t currentSheetSignature = phoneSheetSignature(
+        state.phone, wifiConnected, bleConnected, phoneDetail, phoneDetailScroll);
+    if (phoneSheetOffsetY == 0 && !phoneSheetSpringActive && !touching) {
+      // Once fully open the sheet is the whole frame, so drawing an obscured
+      // app underneath would only waste PSRAM bandwidth. Keep its rendered
+      // pixels as a snapshot until phone content or detail scroll changes.
+      if (!phoneSheetSnapshotReady ||
+          currentSheetSignature != phoneSheetContentSignature) {
+        TftFrameRenderer::renderPhoneSheet(adjacentFrame, adjacentFont, state.phone,
+                                           wifiConnected, bleConnected, phoneDetail,
+                                           phoneDetailScroll);
+        phoneSheetSnapshotReady = true;
+        phoneSheetContentSignature = currentSheetSignature;
+      }
+      memcpy(canvas.pixels(), adjacentFrame.pixels(), kPixelBytes);
+    } else {
+      if (!phoneSheetBaseSnapshotReady) {
+        TftFrameRenderer::render(canvas, tftFont, state, wifiConnected, bleConnected, ip, port,
+                                 silenceMs, weather, renderedView, pressedMediaControl,
+                                 renderedPressedRow, phoneDetail, phoneDetailScroll,
+                                 automaticMode, settingsPage, homeScroll, weatherRetryPressed,
+                                 displayPreferences.musicPageStyle, &displayPreferences);
+        memcpy(homeTransitionFrame.pixels(), canvas.pixels(), kPixelBytes);
+        phoneSheetBaseSnapshotReady = true;
+      }
+      if (!phoneSheetSnapshotReady ||
+          currentSheetSignature != phoneSheetContentSignature) {
+        TftFrameRenderer::renderPhoneSheet(adjacentFrame, adjacentFont, state.phone,
+                                           wifiConnected, bleConnected, phoneDetail,
+                                           phoneDetailScroll);
+        phoneSheetSnapshotReady = true;
+        phoneSheetContentSignature = currentSheetSignature;
+      }
+      // The sheet and base snapshot are both opaque. Copy each visible row
+      // exactly once instead of copying the 153 KB base and then overwriting
+      // most of it with the moving sheet.
+      if (phoneSheetOffsetY <= 0) {
+        const int16_t sheetBottom = max<int16_t>(0, min<int16_t>(AMAP_TFT_HEIGHT,
+            AMAP_TFT_HEIGHT + phoneSheetOffsetY));
+        if (sheetBottom < AMAP_TFT_HEIGHT) {
+          const size_t offset = sheetBottom * AMAP_TFT_WIDTH;
+          memcpy(canvas.pixels() + offset, homeTransitionFrame.pixels() + offset,
+                 (AMAP_TFT_HEIGHT - sheetBottom) * AMAP_TFT_WIDTH * sizeof(uint16_t));
+        }
+      } else {
+        const int16_t exposedTop = min<int16_t>(phoneSheetOffsetY, AMAP_TFT_HEIGHT);
+        memcpy(canvas.pixels(), homeTransitionFrame.pixels(),
+               exposedTop * AMAP_TFT_WIDTH * sizeof(uint16_t));
+      }
+      compositePhoneSheet(phoneSheetOffsetY);
+    }
+    if (lastPhoneSheetOffsetValid && lastPhoneSheetOffsetY != phoneSheetOffsetY) {
+      addPhoneSheetVisibleBounds(composeRegions, lastPhoneSheetOffsetY);
+      addPhoneSheetVisibleBounds(composeRegions, phoneSheetOffsetY);
+      useExplicitDirtyScan = true;
+    }
+    lastPhoneSheetOffsetY = phoneSheetOffsetY;
+    lastPhoneSheetOffsetValid = true;
+  } else {
+    uint32_t currentComponents[PAGE_COMPONENT_COUNT];
+    buildPageComponents(state, wifiConnected, bleConnected, ip, port, silenceMs, now,
+                        renderedView, automaticMode, homeScroll, pressedMediaControl,
+                        renderedPressedRow, settingsPage, weatherRetryPressed, weather,
+                        displayPreferences, currentComponents);
+    usedPageCache = pageCacheValid && pageCacheView == renderedView;
+    if (usedPageCache) {
+      buildChangedRegions(renderedView, currentComponents, pageComponentSignatures,
+                          homeScroll, displayPreferences.musicPageStyle, settingsPage,
+                          renderedPressedRow, pageCachePressedSettingsRow,
+                          composeRegions);
+      if (composeRegions.count > 0) {
+        for (uint8_t i = 0; i < composeRegions.count; ++i) {
+          const TftRenderRect& region = composeRegions.rects[i];
+          for (int16_t row = region.y; row < region.y + region.height; ++row) {
+            const size_t offset = row * AMAP_TFT_WIDTH + region.x;
+            memcpy(canvas.pixels() + offset, pageCache.pixels() + offset,
+                   region.width * sizeof(uint16_t));
+          }
+        }
+        canvas.setRenderRegions(&composeRegions);
+        TftFrameRenderer::render(canvas, tftFont, state, wifiConnected, bleConnected, ip,
+                                 port, silenceMs, weather, renderedView, pressedMediaControl,
+                                 renderedPressedRow, phoneDetail, phoneDetailScroll,
+                                 automaticMode, settingsPage, homeScroll,
+                                 weatherRetryPressed, displayPreferences.musicPageStyle,
+                                 &displayPreferences, &composeRegions);
+        canvas.setRenderRegions(nullptr);
+        for (uint8_t i = 0; i < composeRegions.count; ++i) {
+          const TftRenderRect& region = composeRegions.rects[i];
+          for (int16_t row = region.y; row < region.y + region.height; ++row) {
+            const size_t offset = row * AMAP_TFT_WIDTH + region.x;
+            memcpy(pageCache.pixels() + offset, canvas.pixels() + offset,
+                   region.width * sizeof(uint16_t));
+          }
+        }
+      }
+    } else {
+      TftFrameRenderer::render(canvas, tftFont, state, wifiConnected, bleConnected, ip,
+                               port, silenceMs, weather, renderedView, pressedMediaControl,
+                               renderedPressedRow, phoneDetail, phoneDetailScroll,
+                               automaticMode, settingsPage, homeScroll,
+                               weatherRetryPressed, displayPreferences.musicPageStyle,
+                               &displayPreferences);
+      memcpy(pageCache.pixels(), canvas.pixels(), kPixelBytes);
+      pageCacheValid = true;
+      pageCacheView = renderedView;
+    }
+    memcpy(pageComponentSignatures, currentComponents, sizeof(currentComponents));
+    pageCachePressedSettingsRow = renderedPressedRow;
+    if (usedPageCache) {
+      useExplicitDirtyScan = true;
+      if (lastHomeTransitionBoundsValid) {
+        composeRegions.add(lastHomeTransitionLeft, lastHomeTransitionTop,
+                           lastHomeTransitionWidth, lastHomeTransitionHeight);
+      }
+      if (lastPhoneSheetOffsetValid) {
+        addPhoneSheetVisibleBounds(composeRegions, lastPhoneSheetOffsetY);
+      }
+    }
+    lastHomeTransitionBoundsValid = false;
+    lastPhoneSheetOffsetValid = false;
+  }
+  if (usedPageCache || useExplicitDirtyScan) {
+    if (showGestureHint || lastShowGestureHint) overlayRegions.add(108, 211, 104, 29);
+    if (displayPreferences.showFrameRate) overlayRegions.add(254, 2, 64, 24);
+  }
+  if (usedPageCache) {
+    for (uint8_t i = 0; i < overlayRegions.count; ++i) {
+      const TftRenderRect& region = overlayRegions.rects[i];
+      for (int16_t row = region.y; row < region.y + region.height; ++row) {
+        const size_t offset = row * AMAP_TFT_WIDTH + region.x;
+        memcpy(canvas.pixels() + offset, pageCache.pixels() + offset,
+               region.width * sizeof(uint16_t));
+      }
+    }
   }
   if (showGestureHint) {
     TftFrameRenderer::drawGestureHint(canvas, tftFont, renderedView);
   }
+  if (displayPreferences.showFrameRate) {
+    TftFrameRenderer::drawFrameRate(canvas, tftFont, framesPerSecond);
+  }
+  if (useExplicitDirtyScan) {
+    for (uint8_t i = 0; i < overlayRegions.count; ++i) {
+      const TftRenderRect& region = overlayRegions.rects[i];
+      composeRegions.add(region.x, region.y, region.width, region.height);
+    }
+  }
   const uint32_t composedAt = micros();
   uint16_t* current = canvas.pixels();
   uint16_t* previous = previousFrame.pixels();
-  if (!frameDrawn) {
-    const uint32_t transferStartedAt = micros();
-    pushRectangle(0, 0, AMAP_TFT_WIDTH, AMAP_TFT_HEIGHT,
-                  current, AMAP_TFT_WIDTH);
-    memcpy(previous, current, kPixelBytes);
-    Serial.printf("TFT full frame: compose=%lu ms transfer=%lu ms total=%lu ms\n",
+  size_t metricDirtyTileCount = 0;
+  size_t metricRectangleCount = 0;
+  uint32_t metricTransferPixels = 0;
+  uint32_t metricTransferDurationUs = 0;
+  if (!previousFrameValid) {
+    queueFullFrameTransfer();
+    previousFrameValid = true;
+    lastPerformanceLogAt = millis();
+    metricDirtyTileCount = kDirtyTileCount;
+    metricRectangleCount = 1;
+    metricTransferPixels = kPixels;
+    Serial.printf("TFT perf: page=%s cache=no compose_regions=0 compose_pixels=%u dirty_tiles=%u/%u dirty_rects=1 pixels=%u compose=%lu ms transfer=%lu ms submit=%lu ms\n",
+                  renderedViewName(renderedView), static_cast<unsigned>(kPixels),
+                  static_cast<unsigned>(kDirtyTileCount),
+                  static_cast<unsigned>(kDirtyTileCount), static_cast<unsigned>(kPixels),
                   static_cast<unsigned long>((composedAt - frameStartedAt) / 1000),
-                  static_cast<unsigned long>((micros() - transferStartedAt) / 1000),
+                  static_cast<unsigned long>(lastTransferDurationUs / 1000),
                   static_cast<unsigned long>((micros() - frameStartedAt) / 1000));
   } else {
     // Detect changes in small tiles, then merge identical horizontal runs on
@@ -956,6 +1808,10 @@ void TftRenderer::render(const NavState& state, bool wifiConnected, bool bleConn
       for (int16_t tileX = 0; tileX < kDirtyTileColumns; ++tileX) {
         const int16_t x = tileX * kDirtyTileWidth;
         const int16_t y = tileY * kDirtyTileHeight;
+        if (useExplicitDirtyScan &&
+            !composeRegions.intersects(x, y, kDirtyTileWidth, kDirtyTileHeight)) {
+          continue;
+        }
         bool dirty = false;
         for (int16_t row = 0; row < kDirtyTileHeight && !dirty; ++row) {
           const size_t offset = (y + row) * AMAP_TFT_WIDTH + x;
@@ -966,6 +1822,7 @@ void TftRenderer::render(const NavState& state, bool wifiConnected, bool bleConn
         dirtyTileCount += dirty ? 1 : 0;
       }
     }
+    metricDirtyTileCount = dirtyTileCount;
 
     DirtyRectangle rectangles[kMaxDirtyRectangles];
     size_t rectangleCount = 0;
@@ -1002,20 +1859,41 @@ void TftRenderer::render(const NavState& state, bool wifiConnected, bool bleConn
       }
     }
 
+    // Merge neighboring equal-height runs separated by no more than one tile.
+    // Sending a few unchanged pixels is cheaper than another address-window
+    // command on both the GDMA and FIFO panel paths.
+    for (size_t i = 0; i < rectangleCount; ++i) {
+      for (size_t j = i + 1; j < rectangleCount;) {
+        DirtyRectangle& left = rectangles[i];
+        const DirtyRectangle& right = rectangles[j];
+        const int16_t gap = right.x - (left.x + left.width);
+        if (left.y == right.y && left.height == right.height &&
+            gap >= 0 && gap <= kDirtyTileWidth) {
+          left.width = right.x + right.width - left.x;
+          for (size_t move = j + 1; move < rectangleCount; ++move) {
+            rectangles[move - 1] = rectangles[move];
+          }
+          --rectangleCount;
+        } else {
+          ++j;
+        }
+      }
+    }
+
     if (tooFragmented || dirtyTileCount >= kFullRefreshDirtyTiles) {
-      const uint32_t transferStartedAt = micros();
-      pushRectangle(0, 0, AMAP_TFT_WIDTH, AMAP_TFT_HEIGHT,
-                    current, AMAP_TFT_WIDTH);
-      memcpy(previous, current, kPixelBytes);
-      Serial.printf("TFT full refresh: dirty=%u/%u compose=%lu ms transfer=%lu ms total=%lu ms\n",
-                    static_cast<unsigned>(dirtyTileCount),
-                    static_cast<unsigned>(kDirtyTileCount),
-                    static_cast<unsigned long>((composedAt - frameStartedAt) / 1000),
-                    static_cast<unsigned long>((micros() - transferStartedAt) / 1000),
-                    static_cast<unsigned long>((micros() - frameStartedAt) / 1000));
+      queueFullFrameTransfer();
+      metricRectangleCount = 1;
+      metricTransferPixels = kPixels;
+      metricTransferDurationUs = lastTransferDurationUs;
     } else {
+      // Hold CS and the SPI transaction across all dirty regions. Address
+      // windows still change per rectangle, but transaction setup is paid once.
+      const uint32_t transferStartedAt = micros();
+      if (rectangleCount > 0) waitForFrameTransfer();
+      if (rectangleCount > 0 && activePanel != nullptr) activePanel->startWrite();
       for (size_t i = 0; i < rectangleCount; ++i) {
         const DirtyRectangle& rectangle = rectangles[i];
+        metricTransferPixels += static_cast<uint32_t>(rectangle.width) * rectangle.height;
         for (int16_t row = 0; row < rectangle.height; ++row) {
           const size_t sourceOffset =
               (rectangle.y + row) * AMAP_TFT_WIDTH + rectangle.x;
@@ -1023,14 +1901,34 @@ void TftRenderer::render(const NavState& state, bool wifiConnected, bool bleConn
                  current + sourceOffset,
                  rectangle.width * sizeof(uint16_t));
         }
-        pushRectangle(rectangle.x, rectangle.y, rectangle.width, rectangle.height,
-                      current + rectangle.y * AMAP_TFT_WIDTH + rectangle.x,
-                      AMAP_TFT_WIDTH);
+        writeRectangle(rectangle.x, rectangle.y, rectangle.width, rectangle.height,
+                       current + rectangle.y * AMAP_TFT_WIDTH + rectangle.x,
+                       AMAP_TFT_WIDTH);
       }
+      if (rectangleCount > 0 && activePanel != nullptr) activePanel->endWrite();
+      metricRectangleCount = rectangleCount;
+      metricTransferDurationUs = rectangleCount > 0 ? micros() - transferStartedAt : 0;
+    }
+    const unsigned long performanceNow = millis();
+    if (performanceNow - lastPerformanceLogAt >= 1000UL) {
+      lastPerformanceLogAt = performanceNow;
+      Serial.printf("TFT perf: page=%s cache=%s compose_regions=%u compose_pixels=%lu dirty_tiles=%u/%u dirty_rects=%u pixels=%lu compose=%lu ms transfer=%lu ms submit=%lu ms\n",
+                    renderedViewName(renderedView), usedPageCache ? "yes" : "no",
+                    static_cast<unsigned>(composeRegions.count),
+                    static_cast<unsigned long>(usedPageCache ? composeRegions.pixelCount() : kPixels),
+                    static_cast<unsigned>(metricDirtyTileCount),
+                    static_cast<unsigned>(kDirtyTileCount),
+                    static_cast<unsigned>(metricRectangleCount),
+                    static_cast<unsigned long>(metricTransferPixels),
+                    static_cast<unsigned long>((composedAt - frameStartedAt) / 1000),
+                    static_cast<unsigned long>(metricTransferDurationUs / 1000),
+                    static_cast<unsigned long>((micros() - frameStartedAt) / 1000));
     }
   }
   lastFrameSignature = signature;
+  lastShowGestureHint = showGestureHint;
   frameDrawn = true;
+  recordRenderedFrame(millis());
   (void)ip;
   (void)port;
 }
@@ -1038,23 +1936,45 @@ void TftRenderer::render(const NavState& state, bool wifiConnected, bool bleConn
 void TftRenderer::pushRectangle(int16_t x, int16_t y, int16_t width,
                                 int16_t height, const uint16_t* source,
                                 int16_t sourceStride) {
-  if (activePanel == nullptr || transferBuffer == nullptr || width <= 0 || height <= 0) {
+  if ((activePanel == nullptr && dmaPanel == nullptr) || transferBuffer == nullptr ||
+      width <= 0 || height <= 0) {
     return;
   }
-  const int16_t rowsPerChunk = max<int16_t>(1, kTransferPixels / width);
+  if (dmaPanel != nullptr) {
+    writeRectangle(x, y, width, height, source, sourceStride);
+    return;
+  }
   activePanel->startWrite();
-  activePanel->setAddrWindow(x, y, width, height);
+  writeRectangle(x, y, width, height, source, sourceStride);
+  activePanel->endWrite();
+}
+
+void TftRenderer::writeRectangle(int16_t x, int16_t y, int16_t width,
+                                 int16_t height, const uint16_t* source,
+                                 int16_t sourceStride) {
+  const int16_t rowsPerChunk = max<int16_t>(1, kTransferPixels / width);
+  if (activePanel != nullptr) activePanel->setAddrWindow(x, y, width, height);
   for (int16_t row = 0; row < height;) {
     const int16_t chunkRows = min<int16_t>(rowsPerChunk, height - row);
     for (int16_t chunkRow = 0; chunkRow < chunkRows; ++chunkRow) {
-      memcpy(transferBuffer + chunkRow * width,
-             source + (row + chunkRow) * sourceStride,
-             width * sizeof(uint16_t));
+      const uint16_t* sourceRow = source + (row + chunkRow) * sourceStride;
+      uint16_t* destinationRow = transferBuffer + chunkRow * width;
+      memcpy(destinationRow, sourceRow, width * sizeof(uint16_t));
     }
-    activePanel->writePixels(transferBuffer,
-                             static_cast<uint32_t>(chunkRows) * width,
-                             true, false);
+    if (dmaPanel != nullptr) {
+      while (xSemaphoreTake(dmaTransferDone, 0) == pdTRUE) {}
+      const esp_err_t result = esp_lcd_panel_draw_bitmap(
+          dmaPanel, x, y + row, x + width, y + row + chunkRows, transferBuffer);
+      if (result != ESP_OK ||
+          xSemaphoreTake(dmaTransferDone, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        Serial.printf("TFT DMA transfer failed: %s\n", esp_err_to_name(result));
+        return;
+      }
+    } else {
+      activePanel->writePixels(transferBuffer,
+                               static_cast<uint32_t>(chunkRows) * width,
+                               true, true);
+    }
     row += chunkRows;
   }
-  activePanel->endWrite();
 }

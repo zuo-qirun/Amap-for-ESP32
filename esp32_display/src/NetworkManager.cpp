@@ -1,6 +1,8 @@
 #include "NetworkManager.h"
 
+#include "AlbumArtCache.h"
 #include "Config.h"
+#include "ProtocolParser.h"
 #include "WeatherService.h"
 
 #include <Esp.h>
@@ -25,7 +27,7 @@ NetworkManager::NetworkManager()
       portalGateway(192, 168, 4, 1),
       portalSubnet(255, 255, 255, 0) {}
 
-void NetworkManager::begin(OtaManager* ota, const NavState* navigation, BleReceiver* ble,
+void NetworkManager::begin(OtaManager* ota, NavState* navigation, BleReceiver* ble,
                            WeatherService* weather) {
   otaManager = ota;
   navigationState = navigation;
@@ -410,6 +412,10 @@ void NetworkManager::configureRoutes() {
                [this]() { handleManualFirmwareUpload(); });
   webServer.on("/firmware/upload", HTTP_GET, [this]() { redirectToRoot(); });
   webServer.on("/status.json", HTTP_GET, [this]() { handleStatusJson(); });
+  // The BetterNCM lyric companion uses a simple text/plain POST so Chromium
+  // can reach an ESP32 on the LAN without a native UDP bridge.
+  webServer.on("/api/music", HTTP_POST, [this]() { handleMusicUpdate(); });
+  webServer.on("/api/music", HTTP_OPTIONS, [this]() { handleMusicOptions(); });
   webServer.on("/tft.bmp", HTTP_GET, [this]() { handleTftBitmap(); });
   webServer.on("/generate_204", HTTP_GET, [this]() { redirectToPortal(); });
   webServer.on("/fwlink", HTTP_GET, [this]() { redirectToPortal(); });
@@ -739,8 +745,48 @@ bool NetworkManager::applyOtaChannelSelection(String& message) {
 }
 
 void NetworkManager::handleStatusJson() {
+  webServer.sendHeader("Access-Control-Allow-Origin", "*");
   webServer.sendHeader("Cache-Control", "no-store");
   webServer.send(200, "application/json; charset=utf-8", buildStatusJson());
+}
+
+void NetworkManager::handleMusicOptions() {
+  webServer.sendHeader("Access-Control-Allow-Origin", "*");
+  webServer.sendHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  webServer.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+  webServer.sendHeader("Access-Control-Allow-Private-Network", "true");
+  webServer.send(204, "text/plain", "");
+}
+
+void NetworkManager::handleMusicUpdate() {
+  webServer.sendHeader("Access-Control-Allow-Origin", "*");
+  webServer.sendHeader("Cache-Control", "no-store");
+  if (navigationState == nullptr) {
+    webServer.send(503, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"state unavailable\"}");
+    return;
+  }
+  if (!webServer.hasArg("plain")) {
+    webServer.send(400, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"missing body\"}");
+    return;
+  }
+  const String payload = webServer.arg("plain");
+  if (payload.isEmpty() || payload.length() > 2048) {
+    webServer.send(413, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"invalid payload size\"}");
+    return;
+  }
+
+  ProtocolParser parser;
+  String error;
+  if (!parser.parse(payload.c_str(), payload.length(), *navigationState, error)) {
+    Serial.printf("HTTP music update rejected: %s\n", error.c_str());
+    webServer.send(400, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"invalid music frame\"}");
+    return;
+  }
+  Serial.printf("HTTP music update: song=%lld playing=%s lyric=%s\n",
+                static_cast<long long>(navigationState->music.songId),
+                navigationState->music.playing ? "true" : "false",
+                navigationState->music.lyric.c_str());
+  webServer.send(200, "application/json; charset=utf-8", "{\"ok\":true}");
 }
 
 void NetworkManager::handleTftBitmap() {
@@ -1147,6 +1193,8 @@ String NetworkManager::buildNavigationJson() const {
   json += ",\"title\":\"" + jsonEscape(state.music.title) + "\"";
   json += ",\"artist\":\"" + jsonEscape(state.music.artist) + "\"";
   json += ",\"album\":\"" + jsonEscape(state.music.album) + "\"";
+  json += ",\"coverUrl\":\"" + jsonEscape(state.music.coverUrl) + "\"";
+  json += ",\"artworkState\":\"" + jsonEscape(AlbumArtCache::instance().status()) + "\"";
   json += ",\"positionMs\":" + String(static_cast<long long>(state.music.positionMs));
   json += ",\"durationMs\":" + String(static_cast<long long>(state.music.durationMs));
   json += ",\"lyric\":\"" + jsonEscape(state.music.lyric) + "\"";

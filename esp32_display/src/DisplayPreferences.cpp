@@ -12,6 +12,14 @@ DisplayPreferences DisplayPreferences::load() {
     value.nightDim = prefs.getBool("night", false);
     value.autoView = prefs.getBool("auto_view", true);
     value.messageBanners = prefs.getBool("banners", true);
+    const uint8_t legacyStyle = prefs.getBool("music_pip", false)
+        ? static_cast<uint8_t>(MusicPageStyle::PipWindow)
+        : static_cast<uint8_t>(MusicPageStyle::Standard);
+    value.musicPageStyle = static_cast<MusicPageStyle>(constrain(
+        prefs.getUChar("music_style", legacyStyle),
+        static_cast<uint8_t>(MusicPageStyle::Standard),
+        static_cast<uint8_t>(MusicPageStyle::RefinedNowPlaying)));
+    value.showFrameRate = prefs.getBool("show_fps", false);
     prefs.end();
   }
   return value;
@@ -22,7 +30,10 @@ bool DisplayPreferences::save() const {
   if (!prefs.begin(kNamespace, false)) return false;
   const bool ok = prefs.putUChar("brightness", constrain(brightness, 20, 100)) > 0 &&
       prefs.putBool("night", nightDim) > 0 && prefs.putBool("auto_view", autoView) > 0 &&
-      prefs.putBool("banners", messageBanners) > 0;
+      prefs.putBool("banners", messageBanners) > 0 &&
+      prefs.putUChar("music_style", static_cast<uint8_t>(musicPageStyle)) > 0 &&
+      prefs.putBool("music_pip", musicPageStyle == MusicPageStyle::PipWindow) > 0 &&
+      prefs.putBool("show_fps", showFrameRate) > 0;
   prefs.end();
   return ok;
 }

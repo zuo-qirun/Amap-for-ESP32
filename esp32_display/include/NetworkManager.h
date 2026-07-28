@@ -18,7 +18,7 @@ class WeatherService;
 class NetworkManager {
 public:
   NetworkManager();
-  void begin(OtaManager* ota, const NavState* navigation = nullptr,
+  void begin(OtaManager* ota, NavState* navigation = nullptr,
              BleReceiver* ble = nullptr, WeatherService* weather = nullptr);
   void update();
   int readPacket(char* buffer, size_t capacity, IPAddress& remoteIp, uint16_t& remotePort);
@@ -45,7 +45,7 @@ private:
   OtaManager* otaManager = nullptr;
   BleReceiver* bleReceiver = nullptr;
   WeatherService* weatherService = nullptr;
-  const NavState* navigationState = nullptr;
+  NavState* navigationState = nullptr;
   TftPreviewRenderer tftPreview;
   String activeSsid;
   String activePassword;
@@ -100,6 +100,8 @@ private:
   void handleManualFirmwareUploadComplete();
   void failManualFirmwareUpload(const String& message);
   void handleTftBitmap();
+  void handleMusicUpdate();
+  void handleMusicOptions();
   bool applyOtaChannelSelection(String& message);
   void handleStatusJson();
   void handleNotFound();

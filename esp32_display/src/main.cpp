@@ -26,12 +26,12 @@ bool displayReady = false;
 uint8_t lastTouchCount = 0;
 
 enum class ActiveInputLink : uint8_t { None, Udp, Ble };
-ActiveInputLink activeInputLink = ActiveInputLink::None;
+ActiveInputLink activeMusicLink = ActiveInputLink::None;
 
 void sendMediaControl(MediaControlCommand command) {
   const char* action = mediaControlAction(command);
   bool sent = false;
-  if (activeInputLink == ActiveInputLink::Ble) {
+  if (activeMusicLink == ActiveInputLink::Ble) {
     sent = ble.sendMediaControl(action);
     if (!sent) sent = network.sendMediaControl(action);
   } else {
@@ -75,6 +75,11 @@ void loop() {
   if (display.takeMediaControlCommand(mediaCommand)) {
     sendMediaControl(mediaCommand);
   }
+  if (display.takeWeatherRetryRequest()) {
+    if (weather.requestRefresh()) {
+      Serial.println("Weather refresh requested from TFT");
+    }
+  }
   if (touchCount != lastTouchCount) {
     lastTouchCount = touchCount;
     if (touchCount > 0) {
@@ -96,8 +101,10 @@ void loop() {
   if (length > 0) {
     String error;
     if (parser.parse(packetBuffer, static_cast<size_t>(length), navState, error)) {
-      network.rememberControlPeer(remoteIp, remotePort);
-      activeInputLink = ActiveInputLink::Udp;
+      if (parser.musicAccepted()) {
+        network.rememberControlPeer(remoteIp, remotePort);
+        activeMusicLink = ActiveInputLink::Udp;
+      }
       Serial.printf("UDP %s:%u length=%d seq=%lu mode=%s active=%s lightCount=%u\n",
                     remoteIp.toString().c_str(),
                     remotePort,
@@ -120,7 +127,7 @@ void loop() {
   if (length > 0) {
     String error;
     if (parser.parse(packetBuffer, static_cast<size_t>(length), navState, error)) {
-      activeInputLink = ActiveInputLink::Ble;
+      if (parser.musicAccepted()) activeMusicLink = ActiveInputLink::Ble;
       Serial.printf("BLE length=%d seq=%lu mode=%s active=%s lightCount=%u\n",
                     length,
                     static_cast<unsigned long>(navState.seq),
@@ -133,7 +140,7 @@ void loop() {
   }
 
   unsigned long now = millis();
-  if (now - lastRenderAt >= 33UL) {
+  if (now - lastRenderAt >= AMAP_TFT_FRAME_INTERVAL_MS) {
     lastRenderAt = now;
     unsigned long silenceMs = navState.lastPacketAt == 0 ? ULONG_MAX : now - navState.lastPacketAt;
     const WeatherState weatherState = weather.snapshot();

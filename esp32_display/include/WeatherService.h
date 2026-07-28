@@ -41,6 +41,9 @@ class WeatherService {
 public:
   void begin();
   void update(bool wifiConnected);
+  // Schedules the next configured forecast request immediately. Network I/O
+  // remains in update()'s worker task, so this is safe to call from touch UI.
+  bool requestRefresh();
   WeatherState snapshot() const;
   String cityName() const;
   bool setCityName(String city);

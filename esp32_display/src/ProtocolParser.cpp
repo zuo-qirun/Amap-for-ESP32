@@ -4,6 +4,13 @@
 
 namespace {
 constexpr unsigned long kActiveMusicSourceHoldMs = 1500UL;
+
+uint8_t musicSourcePriority(const String& source) {
+  // Native providers carry track identity, cover, translation and word timing;
+  // generic MediaSession remains the automatic fallback after they go quiet.
+  if (source == "netease") return 2;
+  return source.isEmpty() ? 0 : 1;
+}
 }
 
 bool ProtocolParser::parse(const char* payload, size_t length, NavState& target, String& error) {
@@ -163,9 +170,14 @@ bool ProtocolParser::parseMusic(JsonObject music, MusicState& target, unsigned l
 
   // Multiple transports can be connected at once. An inactive heartbeat from
   // one source must not blank a currently active source that is still sending.
-  // A stop from the same source remains immediate, and a silent source expires
-  // naturally after the short hold window.
+  // While a native provider is fresh, a lower-priority generic MediaSession
+  // frame must not replace its richer lyrics and cover on every BLE poll.
+  // A silent source expires naturally after the short hold window.
   if (!incomingActive && currentSourceFresh && differentKnownSource) return false;
+  if (incomingActive && currentSourceFresh && differentKnownSource &&
+      musicSourcePriority(incomingSource) < musicSourcePriority(target.source)) {
+    return false;
+  }
 
   target.active = incomingActive;
   target.playing = music["playing"] | false;
@@ -182,6 +194,7 @@ bool ProtocolParser::parseMusic(JsonObject music, MusicState& target, unsigned l
   target.lyric = limitText(readText(music["lyric"] | ""), 240);
   target.translatedLyric = limitText(readText(music["translatedLyric"] | ""), 240);
   target.nextLyric = limitText(readText(music["nextLyric"] | ""), 240);
+  target.interlude = music["interlude"] | false;
   target.highlightedLyric = limitText(readText(music["highlightedLyric"] | ""), 240);
   target.currentWord = limitText(readText(music["currentWord"] | ""), 72);
   target.lineStartMs = music["lineStartMs"] | static_cast<int64_t>(-1);

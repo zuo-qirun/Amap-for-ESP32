@@ -4,6 +4,7 @@ import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 public class LrcTimelineTest {
     @Test
@@ -54,5 +55,19 @@ public class LrcTimelineTest {
         LrcTimeline.At last = timeline.at(15_500L);
         assertEquals("We could leave", last.highlightedLyric);
         assertEquals("leave", last.currentWord);
+    }
+
+    @Test
+    public void exposesRefinedInterludeForFiveSecondYrcGap() {
+        LrcTimeline timeline = LrcTimeline.parse("", "",
+                "[0,1000](0,1000,0)Before\n[7000,1000](7000,1000,0)After");
+
+        LrcTimeline.At gap = timeline.at(3_000L);
+        assertTrue(gap.interlude);
+        assertEquals("", gap.lyric);
+        assertEquals("Before", gap.previousLyric);
+        assertEquals("After", gap.nextLyric);
+        assertEquals(1_000L, gap.lineStartMs);
+        assertEquals(6_000L, gap.lineDurationMs);
     }
 }

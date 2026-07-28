@@ -188,6 +188,7 @@ final class MusicStateStore {
             target.lyric = suppressOldTrack ? "" : lyrics.lyric;
             target.translatedLyric = suppressOldTrack ? "" : lyrics.translatedLyric;
             target.nextLyric = suppressOldTrack ? "" : lyrics.nextLyric;
+            target.interlude = !suppressOldTrack && lyrics.interlude;
             target.highlightedLyric = suppressOldTrack ? "" : lyrics.highlightedLyric;
             target.currentWord = suppressOldTrack ? "" : lyrics.currentWord;
             target.lineStartMs = suppressOldTrack ? -1L : lyrics.lineStartMs;

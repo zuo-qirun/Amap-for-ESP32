@@ -109,7 +109,8 @@ final class Esp32NavState {
                 .append(music.songId).append('|').append(music.title).append('|').append(music.artist)
                 .append('|').append(music.positionMs).append('|').append(music.durationMs).append('|')
                 .append(music.lyric).append('|').append(music.translatedLyric).append('|')
-                .append(music.nextLyric).append('|').append(music.highlightedLyric).append('|')
+                .append(music.nextLyric).append('|').append(music.interlude).append('|')
+                .append(music.highlightedLyric).append('|')
                 .append(music.currentWord).append('|').append(music.wordStartMs).append('|')
                 .append(music.wordDurationMs).append('|').append(music.lineStartMs).append('|')
                 .append(music.lineDurationMs).append('|')
@@ -300,6 +301,7 @@ final class Esp32NavState {
         String lyric = "";
         String translatedLyric = "";
         String nextLyric = "";
+        boolean interlude;
         String highlightedLyric = "";
         String currentWord = "";
         long lineStartMs = -1L;
@@ -324,6 +326,7 @@ final class Esp32NavState {
             lyric = value.lyric;
             translatedLyric = value.translatedLyric;
             nextLyric = value.nextLyric;
+            interlude = value.interlude;
             highlightedLyric = value.highlightedLyric;
             currentWord = value.currentWord;
             lineStartMs = value.lineStartMs;

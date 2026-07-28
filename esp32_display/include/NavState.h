@@ -98,6 +98,9 @@ struct MusicState {
   String lyric;
   String translatedLyric;
   String nextLyric;
+  // Refined Now Playing treats a long lyric gap as a synthetic empty line and
+  // animates three timed dots instead of showing a stale lyric.
+  bool interlude = false;
   String highlightedLyric;
   String currentWord;
   int64_t lineStartMs = -1;

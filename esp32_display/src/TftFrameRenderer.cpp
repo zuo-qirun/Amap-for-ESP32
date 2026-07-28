@@ -147,6 +147,34 @@ bool regionVisible(const TftRenderRegions* regions, int16_t x, int16_t y,
   return regions == nullptr || regions->intersects(x, y, width, height);
 }
 
+void fillRenderRegions(Adafruit_GFX& display, uint16_t color,
+                       const TftRenderRegions* regions) {
+  if (regions == nullptr || regions->count == 0) {
+    display.fillScreen(color);
+    return;
+  }
+  for (uint8_t index = 0; index < regions->count; ++index) {
+    const TftRenderRect& rect = regions->rects[index];
+    display.fillRect(rect.x, rect.y, rect.width, rect.height, color);
+  }
+}
+
+bool drawAlbumBackdrop(Adafruit_GFX& display, const TftRenderRegions* regions,
+                       uint8_t sourceOpacity, uint16_t background) {
+  AlbumArtCache& cache = AlbumArtCache::instance();
+  if (regions == nullptr || regions->count == 0) {
+    return cache.drawBlurredRegion(display, 0, 0, display.width(), display.height(),
+                                   sourceOpacity, background);
+  }
+  bool ready = true;
+  for (uint8_t index = 0; index < regions->count; ++index) {
+    const TftRenderRect& rect = regions->rects[index];
+    ready = cache.drawBlurredRegion(display, rect.x, rect.y, rect.width, rect.height,
+                                    sourceOpacity, background) && ready;
+  }
+  return ready;
+}
+
 int utf8CodePointCount(const String& text) {
   int count = 0;
   for (size_t index = 0; index < text.length(); ++index) {
@@ -340,6 +368,23 @@ String clipUtf8ToWidth(U8G2_FOR_ADAFRUIT_GFX& font, const String& text, int16_t 
     offset += bytes;
   }
   return result + suffix;
+}
+
+String clipUtf8Window(U8G2_FOR_ADAFRUIT_GFX& font, const String& text, int16_t maxWidth) {
+  if (maxWidth <= 0) return "";
+  String result;
+  int16_t resultWidth = 0;
+  for (size_t offset = 0; offset < text.length();) {
+    const size_t bytes = min(utf8CharacterBytes(static_cast<uint8_t>(text[offset])),
+                             text.length() - offset);
+    const String character = text.substring(offset, offset + bytes);
+    const int16_t characterWidth = textWidth(font, character);
+    if (resultWidth + characterWidth > maxWidth) break;
+    result += character;
+    resultWidth += characterWidth;
+    offset += bytes;
+  }
+  return result;
 }
 
 class HorizontalClipCanvas : public Adafruit_GFX {
@@ -1129,15 +1174,18 @@ void TftFrameRenderer::renderMusicRefinedNowPlaying(
   const uint16_t fallbackTone = musicAccent(music.songId);
   const uint16_t albumTone = AlbumArtCache::instance().dominantColor(fallbackTone);
   const uint16_t backdrop = alphaBlend(kCanvas, albumTone, 0x54);
-  const uint16_t strong = alphaBlend(backdrop, kText, 0xEE);
-  const uint16_t medium = alphaBlend(backdrop, kText, 0x92);
-  const uint16_t faint = alphaBlend(backdrop, kText, 0x52);
-  const uint16_t accent = alphaBlend(albumTone, kText, 0x48);
+  // Refined does not use raw dominant-cover pixels for text. It selects a
+  // representative source color, then raises it to light tonal shades so the
+  // active lyric stays cover-matched and readable on the dim backdrop.
+  const uint16_t shade1 = alphaBlend(albumTone, kText, 0xA8);
+  const uint16_t shade2 = alphaBlend(albumTone, kText, 0xD4);
+  const uint16_t strong = shade2;
+  const uint16_t medium = alphaBlend(backdrop, shade1, 0xB4);
+  const uint16_t faint = alphaBlend(backdrop, shade1, 0x62);
+  const uint16_t accent = shade1;
 
-  display.fillScreen(backdrop);
-  if (!AlbumArtCache::instance().drawBlurred(display, 0, 0, display.width(),
-                                              display.height(), 18, 104, kCanvas)) {
-    display.fillScreen(backdrop);
+  if (!drawAlbumBackdrop(display, regions, 104, kCanvas)) {
+    fillRenderRegions(display, backdrop, regions);
   }
 
   // The reference page keeps album identity and metadata on the left while a
@@ -1195,7 +1243,27 @@ void TftFrameRenderer::renderMusicRefinedNowPlaying(
     font.setFont(u8g2_font_wqy16_t_gb2312);
     const uint16_t activeLine = alphaBlend(medium, strong,
         static_cast<uint8_t>(currentEase * 255.0f));
-    if (music.highlightedLyric.isEmpty() && music.currentWord.isEmpty()) {
+    if (music.interlude && music.lineStartMs >= 0 && music.lineDurationMs > 0) {
+      // Refined divides the gap into three equal word-like animations. The
+      // active row fades in after its line transition and breathes as a group.
+      const int64_t local = min<int64_t>(music.lineDurationMs,
+                                         max<int64_t>(0, positionMs - music.lineStartMs));
+      const int64_t perDot = max<int64_t>(1, music.lineDurationMs / 3);
+      const float breath = music.playing
+          ? 1.0f + 0.05f * sinf(static_cast<float>(now % 2000UL) * PI / 1000.0f)
+          : 1.0f;
+      for (int index = 0; index < 3; ++index) {
+        const float progress = constrain(
+            static_cast<float>(local - perDot * index) / static_cast<float>(perDot),
+            0.0f, 1.0f);
+        const float scale = (0.9f + 0.1f * min(1.0f, progress * 2.0f)) * breath;
+        const uint8_t opacity = static_cast<uint8_t>(
+            (0.2f + 0.7f * progress) * currentEase * 255.0f);
+        const int16_t radius = max<int16_t>(3, static_cast<int16_t>(4.0f * scale + 0.5f));
+        display.fillCircle(lyricLeft + 7 + index * 15, currentBaseline - 6, radius,
+                           alphaBlend(backdrop, strong, opacity));
+      }
+    } else if (music.highlightedLyric.isEmpty() && music.currentWord.isEmpty()) {
       drawTimedScrollingLine(font, lyricLeft, currentBaseline, lyricWidth, lyric,
                              positionMs, music.lineStartMs,
                              music.lineDurationMs, activeLine);
@@ -1272,9 +1340,8 @@ void TftFrameRenderer::renderMusicPipWindow(Adafruit_GFX& display,
   const unsigned long now = millis();
   const int64_t positionMs = music.positionAt(now);
 
-  display.fillScreen(outside);
-  if (!AlbumArtCache::instance().drawBlurred(display, 0, 0, display.width(), display.height(), 20)) {
-    display.fillScreen(outside);
+  if (!drawAlbumBackdrop(display, regions, 255, kCanvas)) {
+    fillRenderRegions(display, outside, regions);
   }
   // The card intentionally stands apart from the rest of the firmware UI.
   // It mirrors the reference plugin's floating window rather than our shell.
@@ -1668,7 +1735,16 @@ void TftFrameRenderer::drawTimedScrollingLine(U8G2_FOR_ADAFRUIT_GFX& font,
     start += bytes;
   }
   font.setFont(primary);
-  drawClipped(font, x, baseline, maxWidth, text.substring(start), color);
+  // Do not append an ellipsis to a moving viewport: at the tail that suffix
+  // displaced the real final word forever. At the terminal position advance
+  // to the earliest UTF-8 suffix that fits, guaranteeing the last word is
+  // visible before the next lyric transition.
+  if (scrollProgress >= 1000) {
+    while (start < text.length() && textWidth(font, text.substring(start)) > maxWidth) {
+      start += utf8CharacterBytes(static_cast<uint8_t>(text[start]));
+    }
+  }
+  drawUtf8(font, x, baseline, clipUtf8Window(font, text.substring(start), maxWidth), color);
 }
 
 void TftFrameRenderer::drawBig(Adafruit_GFX& display, int16_t x, int16_t top,

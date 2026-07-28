@@ -33,6 +33,7 @@ manifest.json
 tmp/
 temp/
 .codex-tmp/
+.pio-core/
 __pycache__/
 ota_sync/node_modules/
 ota_sync/.env
@@ -46,4 +47,5 @@ betterncm_plugin/amap-esp32-lyrics/udp_helper/publish/
 betterncm_plugin/amap-esp32-lyrics/amap-esp32-lyrics-udp.exe
 betterncm_plugin/*.zip
 !betterncm_plugin/AMap-ESP32-Lyrics-betterncm-v0.2.7.zip
+!betterncm_plugin/AMap-ESP32-Lyrics-betterncm-v0.2.8.zip
 !betterncm_plugin/amap-esp32-lyrics/manifest.json

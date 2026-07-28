@@ -83,6 +83,39 @@ plugin.onLoad(() => {
     return { current: state.lines[index] || null, previous: state.lines[index - 1] || null, next: state.lines[nextIndex] || null };
   }
 
+  // Refined's lyric processor keeps an empty timeline row only when it spans
+  // at least five seconds. LibLyric normally supplies those rows itself; this
+  // fallback also reconstructs one when a provider returns only non-empty
+  // lines but exposes trustworthy line durations.
+  function withRefinedInterludes(lines) {
+    const source = Array.isArray(lines) ? lines : [];
+    const result = [];
+    const first = source[0];
+    const firstText = String(first && first.originalLyric || "").trim();
+    const firstStart = Number(first && first.time);
+    if (firstText && Number.isFinite(firstStart) && firstStart > 5000) {
+      result.push({ time: 500, duration: firstStart - 500,
+                    originalLyric: "", isInterlude: true });
+    }
+    for (let index = 0; index < source.length; index++) {
+      const line = source[index];
+      const text = String(line && line.originalLyric || "").trim();
+      const start = Number(line && line.time);
+      const durationMs = Math.max(0, Number(line && line.duration) || 0);
+      if (text || (Number.isFinite(start) && durationMs >= 5000)) result.push(line);
+
+      const next = source[index + 1];
+      if (!text || !next || durationMs <= 0 || !Number.isFinite(start)) continue;
+      const nextText = String(next.originalLyric || "").trim();
+      const nextStart = Number(next.dynamicLyricTime || next.time);
+      const end = Number(line.dynamicLyricTime || start) + durationMs;
+      if (nextText && Number.isFinite(nextStart) && nextStart - end >= 5000) {
+        result.push({ time: end, duration: nextStart - end, originalLyric: "", isInterlude: true });
+      }
+    }
+    return result;
+  }
+
   // LibLyric parses NetEase YRC into `dynamicLyric`: every item has its own
   // absolute time, duration, and word. This is the direct counterpart of the
   // Android forwarder's LrcTimeline word loop.
@@ -117,6 +150,8 @@ plugin.onLoad(() => {
     const song = state.song || {};
     const selected = lineAt(state.positionMs);
     const current = selected.current || {};
+    const interlude = Boolean(current.isInterlude ||
+      (!String(current.originalLyric || "").trim() && Number(current.duration || 0) >= 5000));
     const album = song.album || song.al || {};
     const word = wordAt(selected.current, state.positionMs);
     return {
@@ -139,9 +174,10 @@ plugin.onLoad(() => {
         positionMs: Math.max(0, Math.round(state.positionMs)),
         durationMs: duration(song),
         previousLyric: clip(selected.previous && selected.previous.originalLyric, 80),
-        lyric: clip(current.originalLyric || state.lyricStatus || "暂无歌词", 80),
+        lyric: interlude ? "" : clip(current.originalLyric || state.lyricStatus || "暂无歌词", 80),
         translatedLyric: clip(current.translatedLyric, 80),
         nextLyric: clip(selected.next && selected.next.originalLyric, 80),
+        interlude,
         highlightedLyric: word.highlightedLyric,
         currentWord: word.currentWord,
         lineStartMs: Number.isFinite(Number(current.time)) ? Number(current.time) : -1,
@@ -243,7 +279,8 @@ plugin.onLoad(() => {
         (data && data.tlyric && data.tlyric.lyric) || "",
         (data && data.romalrc && data.romalrc.lyric) || "",
         (data && data.yrc && data.yrc.lyric) || ""
-      ).filter(line => String(line.originalLyric || "").trim());
+      );
+      parsedLines = withRefinedInterludes(parsedLines);
       lyricStatus = parsedLines.length ? "" : "暂无歌词";
     } catch (error) {
       state.lastError = "Lyric loading failed";

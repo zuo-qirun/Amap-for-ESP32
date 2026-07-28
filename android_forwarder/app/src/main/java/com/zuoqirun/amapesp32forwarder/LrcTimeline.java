@@ -39,7 +39,7 @@ final class LrcTimeline {
         }
         List<Line> result = new ArrayList<>(originals.size());
         for (Map.Entry<Long, String> entry : originals.entrySet()) {
-            result.add(new Line(entry.getKey(), entry.getValue(),
+            result.add(new Line(entry.getKey(), 0L, entry.getValue(),
                     closestTranslation(translations, entry.getKey()), Collections.emptyList()));
         }
         return new LrcTimeline(Collections.unmodifiableList(result));
@@ -63,6 +63,14 @@ final class LrcTimeline {
         Line current = currentIndex >= 0 ? lines.get(currentIndex) : null;
         Line previous = currentIndex > 0 ? lines.get(currentIndex - 1) : null;
         Line next = low < lines.size() ? lines.get(low) : null;
+        if (current != null && next != null && current.durationMs > 0L) {
+            long currentEndMs = current.timeMs + current.durationMs;
+            long gapDurationMs = next.timeMs - currentEndMs;
+            if (gapDurationMs >= 5_000L && positionMs >= currentEndMs) {
+                return new At(current.text, "", "", next.text, true, "", "",
+                        currentEndMs, gapDurationMs, -1L, 0L, 0);
+            }
+        }
         long lineStartMs = current == null ? -1L : current.timeMs;
         long lineDurationMs = current == null ? 0L
                 : Math.max(1_000L, next == null ? 5_000L : next.timeMs - current.timeMs);
@@ -94,7 +102,7 @@ final class LrcTimeline {
         return new At(previous == null ? "" : previous.text,
                 current == null ? "" : current.text,
                 current == null ? "" : current.translated,
-                next == null ? "" : next.text, highlight, currentWord,
+                next == null ? "" : next.text, false, highlight, currentWord,
                 lineStartMs, lineDurationMs, wordStartMs, wordDurationMs,
                 wordProgressPermille);
     }
@@ -167,7 +175,7 @@ final class LrcTimeline {
             }
             String lineText = text.toString().trim();
             if (!lineText.isEmpty()) {
-                result.add(new Line(lineStart, lineText,
+                result.add(new Line(lineStart, Long.parseLong(lineMatcher.group(2)), lineText,
                         closestTranslation(translations, lineStart),
                         Collections.unmodifiableList(words)));
             }
@@ -208,12 +216,14 @@ final class LrcTimeline {
 
     private static final class Line {
         final long timeMs;
+        final long durationMs;
         final String text;
         final String translated;
         final List<Word> words;
 
-        Line(long timeMs, String text, String translated, List<Word> words) {
+        Line(long timeMs, long durationMs, String text, String translated, List<Word> words) {
             this.timeMs = timeMs;
+            this.durationMs = durationMs;
             this.text = text;
             this.translated = translated;
             this.words = words;
@@ -233,12 +243,13 @@ final class LrcTimeline {
     }
 
     static final class At {
-        static final At EMPTY = new At("", "", "", "", "", "",
+        static final At EMPTY = new At("", "", "", "", false, "", "",
                 -1L, 0L, -1L, 0L, 0);
         final String previousLyric;
         final String lyric;
         final String translatedLyric;
         final String nextLyric;
+        final boolean interlude;
         final String highlightedLyric;
         final String currentWord;
         final long lineStartMs;
@@ -248,13 +259,14 @@ final class LrcTimeline {
         final int wordProgressPermille;
 
         At(String previousLyric, String lyric, String translatedLyric, String nextLyric,
-           String highlightedLyric, String currentWord, long lineStartMs,
+           boolean interlude, String highlightedLyric, String currentWord, long lineStartMs,
            long lineDurationMs, long wordStartMs, long wordDurationMs,
            int wordProgressPermille) {
             this.previousLyric = previousLyric;
             this.lyric = lyric;
             this.translatedLyric = translatedLyric;
             this.nextLyric = nextLyric;
+            this.interlude = interlude;
             this.highlightedLyric = highlightedLyric;
             this.currentWord = currentWord;
             this.lineStartMs = lineStartMs;

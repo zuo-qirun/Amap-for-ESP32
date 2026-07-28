@@ -51,6 +51,11 @@ const context = {
         return new Promise(resolve => pendingLyrics.set(String(id), resolve));
       },
       parseLyric(original) {
+        if (original === "INTERLUDE") return [
+          { time: 0, duration: 1000, originalLyric: "Before", dynamicLyric: [] },
+          { time: 1000, duration: 6000, originalLyric: "", isInterlude: true, dynamicLyric: [] },
+          { time: 7000, duration: 2000, originalLyric: "After", dynamicLyric: [] },
+        ];
         return original ? [{
           time: 0,
           duration: 5000,
@@ -106,6 +111,28 @@ const flush = () => new Promise(resolve => setTimeout(resolve, 0));
   assert(songBFrames.some(frame => frame.music.lyric === "Lyric B"));
   assert(!songBFrames.some(frame => frame.music.lyric === "Lyric A"));
   assert.equal(songBFrames.at(-1).music.active, true);
+
+  currentSong = {
+    id: 4,
+    name: "Interlude",
+    artists: [{ name: "Artist D" }],
+    album: { name: "Album D", picUrl: "https://example.test/d.jpg" },
+    duration: 120000,
+  };
+  callbacks["Load:audioplayer"]();
+  await flush();
+  pendingLyrics.get("4")({ lrc: { lyric: "INTERLUDE" } });
+  await flush();
+  callbacks["PlayProgress:audioplayer"](null, 3);
+  callbacks["PlayState:audioplayer"]("play");
+  await flush();
+  const interludeFrames = frames.filter(frame => frame.music.songId === 4);
+  assert.equal(interludeFrames.at(-1).music.interlude, true);
+  assert.equal(interludeFrames.at(-1).music.lyric, "");
+  assert.equal(interludeFrames.at(-1).music.lineStartMs, 1000);
+  assert.equal(interludeFrames.at(-1).music.lineDurationMs, 6000);
+  assert.equal(interludeFrames.at(-1).music.previousLyric, "Before");
+  assert.equal(interludeFrames.at(-1).music.nextLyric, "After");
 
   currentSong = {
     id: 3,

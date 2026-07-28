@@ -209,6 +209,7 @@ final class Esp32Protocol {
         json.put("lyric", safe(music.lyric, 80));
         json.put("translatedLyric", safe(music.translatedLyric, 80));
         json.put("nextLyric", safe(music.nextLyric, 80));
+        json.put("interlude", music.interlude);
         json.put("highlightedLyric", safe(music.highlightedLyric, 80));
         json.put("currentWord", safe(music.currentWord, 24));
         json.put("lineStartMs", music.lineStartMs);

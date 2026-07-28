@@ -1200,6 +1200,8 @@ String NetworkManager::buildNavigationJson() const {
   json += ",\"lyric\":\"" + jsonEscape(state.music.lyric) + "\"";
   json += ",\"translatedLyric\":\"" + jsonEscape(state.music.translatedLyric) + "\"";
   json += ",\"nextLyric\":\"" + jsonEscape(state.music.nextLyric) + "\"";
+  json += ",\"interlude\":";
+  json += state.music.interlude ? "true" : "false";
   json += ",\"highlightedLyric\":\"" + jsonEscape(state.music.highlightedLyric) + "\"";
   json += ",\"wordProgressPermille\":" + String(state.music.wordProgressPermille) + "}";
   json += ",\"laneText\":\"" + jsonEscape(laneText) + "\"";

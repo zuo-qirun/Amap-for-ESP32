@@ -165,6 +165,7 @@ void hashMusic(uint32_t& hash, const MusicState& music, bool includePosition,
   hashString(hash, music.lyric);
   hashString(hash, music.translatedLyric);
   hashString(hash, music.nextLyric);
+  hashValue(hash, music.interlude);
   hashString(hash, music.highlightedLyric);
   hashString(hash, music.currentWord);
   hashValue(hash, music.lineStartMs);
@@ -472,6 +473,7 @@ void buildPageComponents(const NavState& state, bool wifiConnected, bool bleConn
       hashString(components[2], state.music.lyric);
       hashString(components[2], state.music.translatedLyric);
       hashString(components[2], state.music.nextLyric);
+      hashValue(components[2], state.music.interlude);
       hashString(components[2], state.music.highlightedLyric);
       hashString(components[2], state.music.currentWord);
       hashValue(components[2], state.music.lineStartMs);
